@@ -1,0 +1,66 @@
+.idle-screen {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(135deg, #1a1a2e, #16213e, #0f3460);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: bgBreath 8s ease-in-out infinite alternate;
+}
+
+@keyframes bgBreath {
+  from {
+    filter: brightness(1);
+  }
+  to {
+    filter: brightness(1.15);
+  }
+}
+
+.idle-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.5rem;
+}
+
+.clock {
+  font-size: 8rem;
+  font-weight: 300;
+  color: #ffffff;
+  letter-spacing: 0.05em;
+  font-variant-numeric: tabular-nums;
+}
+
+.date {
+  font-size: 2rem;
+  color: rgba(255, 255, 255, 0.7);
+  font-weight: 400;
+}
+
+.divider {
+  width: 120px;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.weather {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 1.8rem;
+}
+
+.weather-icon {
+  font-size: 2.2rem;
+}
+
+.weather-temp {
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.weather-condition {
+  font-weight: 300;
+}

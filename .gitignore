@@ -1,0 +1,15 @@
+# Python 가상환경
+backend/.venv/
+backend/__pycache__/
+backend/*.pyc
+
+# macOS
+.DS_Store
+
+# 에디터
+.idea/
+.vscode/
+
+# Node (frontend/.gitignore에도 있지만 루트에서도 제외)
+frontend/node_modules/
+frontend/dist/
