@@ -1,7 +1,7 @@
 import SubtitleBar from './SubtitleBar'
 import './GreetScreen.css'
 
-function GreetScreen({ subtitle, isListening }) {
+function GreetScreen({ subtitle, userText, isListening }) {
   return (
     <div className="greet-screen">
       <div className="greet-glow" />
@@ -17,7 +17,7 @@ function GreetScreen({ subtitle, isListening }) {
 
       {/* 아래: AI 음성 패널 */}
       <div className="greet-voice-area">
-        <SubtitleBar subtitle={subtitle} isListening={isListening} />
+        <SubtitleBar subtitle={subtitle} userText={userText} isListening={isListening} />
       </div>
     </div>
   )

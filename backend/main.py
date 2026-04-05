@@ -141,9 +141,10 @@ class FaceDetector:
         subtitle = self.voice_agent.current_subtitle or ""
         is_listening = self.voice_agent.is_listening
         is_pill_taken = self.voice_agent.is_pill_taken
+        user_text = getattr(self.voice_agent, 'current_user_text', "")
 
         # 이전 상태와 동일하면 전송하지 않음
-        voice_state = (subtitle, is_listening, is_pill_taken)
+        voice_state = (subtitle, is_listening, is_pill_taken, user_text)
         if voice_state == getattr(self, '_last_voice_state', None):
             return
         self._last_voice_state = voice_state
@@ -151,6 +152,7 @@ class FaceDetector:
         payload = {
             "type": "voice",
             "subtitle": subtitle,
+            "userText": user_text,
             "isListening": is_listening,
             "isPillTaken": is_pill_taken,
         }

@@ -1,5 +1,10 @@
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# .env 파일 로드
+env_path = Path(__file__).parent / ".env"
+load_dotenv(dotenv_path=env_path)
 
 # ==========================================
 # 기본 설정
@@ -26,7 +31,7 @@ MODEL_PATH = str(MODELS_DIR / "res10_300x300_ssd_iter_140000.caffemodel")
 # ==========================================
 # 대화형 모듈 (VoiceAgent) 설정
 # ==========================================
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyBQeafJBC3kS-QV0mtfMcndRDqa6g6ZvBQ")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 SOUNDS_DIR = Path(__file__).parent / "sounds"
 
 # ==========================================

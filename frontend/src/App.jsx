@@ -14,6 +14,7 @@ function App() {
   const [phase, setPhase] = useState('idle') // 'idle' | 'exit' | 'enter'
   const [connected, setConnected] = useState(false)
   const [subtitle, setSubtitle] = useState('')
+  const [userText, setUserText] = useState('')
   const [isListening, setIsListening] = useState(false)
   const [isPillTaken, setIsPillTaken] = useState(false)
   const transitionTimer = useRef(null)
@@ -51,6 +52,7 @@ function App() {
 
         if (data.type === 'voice') {
           setSubtitle(data.subtitle || '')
+          setUserText(data.userText || '')
           setIsListening(data.isListening || false)
           setIsPillTaken(data.isPillTaken || false)
           return
@@ -79,7 +81,7 @@ function App() {
   }, [])
 
   function renderScreen() {
-    const voiceProps = { subtitle, isListening, isPillTaken }
+    const voiceProps = { subtitle, userText, isListening, isPillTaken }
     if (visibleStatus === 'greeting') return <GreetScreen {...voiceProps} />
     if (visibleStatus === 'active') return <ActiveScreen {...voiceProps} />
     return <IdleScreen />

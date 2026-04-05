@@ -1,38 +1,30 @@
 import os
 import time
 import threading
+import collections
 import speech_recognition as sr
-import google.generativeai as genai
-from gtts import gTTS
+from openai import OpenAI
 import pygame
 import config
 
-def init_gemini():
-    if config.GEMINI_API_KEY:
-        genai.configure(api_key=config.GEMINI_API_KEY)
-    else:
-        print("[경고] GEMINI_API_KEY가 설정되지 않았습니다.")
-
 class VoiceAgent:
     def __init__(self):
-        init_gemini()
-        self.model = genai.GenerativeModel('gemini-1.5-flash')
+        self.openai_client = OpenAI(api_key=config.OPENAI_API_KEY)
         self.recognizer = sr.Recognizer()
         self.is_pill_taken = False
         self.is_running = False
         self.is_listening = False
-        self.chat_history = []
+        self.chat_history = collections.deque(maxlen=5)
         self.current_subtitle = ""
+        self.current_user_text = ""
         
         # Pygame 믹서 초기화 (음성 재생용)
         pygame.mixer.init()
         
         # 시스템 프롬프트 (페르소나)
         self.system_prompt = (
-            "너는 홀로 계신 할머니/할아버지를 극진히 모시는 다정한 손주야. "
-            "예의 바르면서도 살갑고 차분한 표준어를 사용해. "
-            "추상적인 조언보다는 '냉장고의 찌개', '따뜻한 보리차' 등 "
-            "매우 구체적이고 일상적인 가족의 맥락을 상상해서 덧붙여줘."
+            "당신은 7살 귀여운 손주입니다. 할머니/할아버지에게 애교 섞인 말투로 "
+            "2문장 이내로 짧고 따뜻하게 답변하세요. 문장 끝에 '웅!', '헤헤~' 같은 표현을 섞으세요."
         )
         
     def start_conversation(self):
@@ -50,10 +42,14 @@ class VoiceAgent:
         """대화 세션을 종료합니다."""
         if self.chat_history:
             print("[VoiceAgent] 대화 요약을 시작합니다...")
-            summary_prompt = "다음 대화 내역을 보고 어르신의 기분과 상태를 1줄 요약하고, 마지막에 [기분 점수: 85/100점] 포맷으로 점수를 함께 산출해 줘:\n" + "\n".join(self.chat_history)
+            summary_prompt = "다음 대화 내역을 보고 어르신의 기분과 상태를 1줄 요약하고, 마지막에 [기분 점수: 85/100점] 포맷으로 점수를 함께 산출해 줘:\n" + "\n".join(list(self.chat_history))
             try:
-                response = self.model.generate_content(summary_prompt)
-                print(f"\n==================================\n[AI 감정 리포트]: {response.text.strip()}\n==================================\n")
+                response = self.openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": summary_prompt}],
+                    max_tokens=100
+                )
+                print(f"\n==================================\n[AI 감정 리포트]: {response.choices[0].message.content.strip()}\n==================================\n")
             except Exception as e:
                 print(f"[요약 에러] {e}")
             self.chat_history.clear()
@@ -107,7 +103,7 @@ class VoiceAgent:
                         self.play_sound("meal_check.mp3", fallback_text=response_text)
                         self.chat_history.append(f"AI: {response_text}")
                     else:
-                        response_text = self.get_gemini_response(user_text)
+                        response_text = self.get_openai_response(user_text)
                         print(f"[AI 손주] {response_text}")
                         self.speak(response_text)
                         self.chat_history.append(f"AI: {response_text}")
@@ -122,6 +118,7 @@ class VoiceAgent:
 
     def listen(self, source) -> str:
         self.is_listening = True
+        self.current_user_text = ""
         print("[VoiceAgent] 마이크를 열었습니다. 듣는 중... 🎤")
         # while루프는 main에서만 돌고, listen 내에서는 한 턴만 처리합니다.
         # timeout을 1초로 주어 is_running 플래그 전환을 허용하며 스레드 병목을 회피합니다.
@@ -131,6 +128,7 @@ class VoiceAgent:
                 print("[VoiceAgent] 소리 포착됨, 구글 인식 중... ☁️")
                 text = self.recognizer.recognize_google(audio, language="ko-KR")
                 self.is_listening = False
+                self.current_user_text = text
                 return text
             except sr.WaitTimeoutError:
                 # 1초 동안 말을 안 한 것임: 정상적인 루프백
@@ -147,14 +145,24 @@ class VoiceAgent:
         self.is_listening = False
         return ""
 
-    def get_gemini_response(self, text: str) -> str:
-        prompt = f"{self.system_prompt}\n\n할머니/할아버지의 말: {text}\n다정한 손주로서 대답해줘:"
+    def get_openai_response(self, text: str) -> str:
+        messages = [{"role": "system", "content": self.system_prompt}]
+        for msg in self.chat_history:
+            role = "user" if msg.startswith("사용자") else "assistant"
+            messages.append({"role": role, "content": msg})
+        messages.append({"role": "user", "content": text})
+
         try:
-            response = self.model.generate_content(prompt)
-            return response.text.strip()
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages,
+                max_tokens=100,
+                temperature=0.8
+            )
+            return response.choices[0].message.content.strip()
         except Exception as e:
-            print(f"[VoiceAgent] Gemini API 에러: {e}")
-            return "지금 연결이 조금 안 좋네요. 잠시 후에 다시 말씀드릴게요."
+            print(f"[VoiceAgent] OpenAI Chat API 에러: {e}")
+            return "잠시만요~ 인터넷이 좀 아픈가 봐요! 다시 말해줄래? 웅!"
 
     def _play_beep(self):
         """대화 전 알림음을 재생합니다."""
@@ -172,16 +180,22 @@ class VoiceAgent:
         self._play_beep()
         self.current_subtitle = text
         try:
-            tts = gTTS(text=text, lang="ko")
+            response = self.openai_client.audio.speech.create(
+                model="tts-1",
+                voice="nova",
+                input=text,
+                speed=1.05
+            )
+            
             filename = "temp_voice.mp3"
-            tts.save(filename)
+            response.stream_to_file(filename)
             
             pygame.mixer.music.load(filename)
             pygame.mixer.music.play()
             
             # 음성 재생이 끝날 때까지 대기
             while pygame.mixer.music.get_busy():
-                time.sleep(0.1)
+                time.sleep(0.05)
                 
             try:
                 # 재생 끝난 후 파일 잠금 해제 (pygame 버전에 따라 지원 안될수도 있음)

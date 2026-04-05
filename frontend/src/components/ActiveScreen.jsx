@@ -10,7 +10,7 @@ const SLIDES = [
   { emoji: '🎵', label: '즐거운 시간' },
 ]
 
-function ActiveScreen({ subtitle, isListening, isPillTaken }) {
+function ActiveScreen({ subtitle, userText, isListening, isPillTaken }) {
   const [slideIndex, setSlideIndex] = useState(0)
 
   useEffect(() => {
@@ -40,7 +40,7 @@ function ActiveScreen({ subtitle, isListening, isPillTaken }) {
 
       {/* 오른쪽: AI 대화 패널 */}
       <div className="active-voice-area">
-        <SubtitleBar subtitle={subtitle} isListening={isListening} />
+        <SubtitleBar subtitle={subtitle} userText={userText} isListening={isListening} />
       </div>
     </div>
   )
