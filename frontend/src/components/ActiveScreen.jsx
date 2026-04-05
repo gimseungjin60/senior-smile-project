@@ -10,7 +10,7 @@ const SLIDES = [
   { emoji: '🎵', label: '즐거운 시간' },
 ]
 
-function ActiveScreen({ subtitle, userText, isListening, isPillTaken }) {
+function ActiveScreen({ subtitle, userText, isListening, isPillTaken, newPhotoUrl }) {
   const [slideIndex, setSlideIndex] = useState(0)
 
   useEffect(() => {
@@ -42,6 +42,14 @@ function ActiveScreen({ subtitle, userText, isListening, isPillTaken }) {
       <div className="active-voice-area">
         <SubtitleBar subtitle={subtitle} userText={userText} isListening={isListening} />
       </div>
+
+      {/* 새 사진 오버레이 (전체 화면 덮기 또는 중앙 팝업) */}
+      {newPhotoUrl && (
+        <div className="new-photo-overlay">
+          <img src={newPhotoUrl} alt="도착한 사진" className="new-photo-img" />
+          <div className="new-photo-caption">손주 사진이 도착했습니다! 💝</div>
+        </div>
+      )}
     </div>
   )
 }

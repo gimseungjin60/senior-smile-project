@@ -6,6 +6,8 @@ import speech_recognition as sr
 from openai import OpenAI
 import pygame
 import config
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 class VoiceAgent:
     def __init__(self):
@@ -18,8 +20,24 @@ class VoiceAgent:
         self.current_subtitle = ""
         self.current_user_text = ""
         
+        # 새 사진 표시 관련 상태 변수
+        self.pending_photo_url = None
+        self.is_asking_photo = False
+        self.new_photo_url = None
+
         # Pygame 믹서 초기화 (음성 재생용)
         pygame.mixer.init()
+        
+        # Firebase 연동
+        try:
+            cred = credentials.Certificate("serviceAccountKey.json")
+            if not firebase_admin._apps:
+                firebase_admin.initialize_app(cred)
+            self.db = firestore.client()
+            self.db.collection('photo_notifs').on_snapshot(self._on_firebase_snapshot)
+            print("[VoiceAgent] Firebase 실시간 감시 시작 완료")
+        except Exception as e:
+            print(f"[VoiceAgent] Firebase 초기화 에러 (기능 제한됨): {e}")
         
         # 시스템 프롬프트 (페르소나)
         self.system_prompt = (
@@ -56,6 +74,14 @@ class VoiceAgent:
             
         self.is_running = False
 
+    def _on_firebase_snapshot(self, col_snapshot, changes, read_time):
+        for change in changes:
+            if change.type.name == 'ADDED':
+                # 새로 문서가 감지되면 URL 확보
+                doc_data = change.document.to_dict()
+                if 'url' in doc_data:
+                    self.pending_photo_url = doc_data['url']
+
     def _run_loop(self):
         """실제 대화를 수행하는 메인 루프 (쓰레드 내부 실행)"""
         print("[VoiceAgent] 대화 모드 시작")
@@ -65,6 +91,15 @@ class VoiceAgent:
             with sr.Microphone() as source:
                 self.recognizer.adjust_for_ambient_noise(source, duration=1.0)
                 while self.is_running:
+                    # 사진 알림 감지 처리 (마이크 입력 받기 전)
+                    if getattr(self, 'pending_photo_url', None) and not self.is_asking_photo:
+                        self.is_asking_photo = True
+                        print("[VoiceAgent] [Firebase] 새 사진 도착! 알림 발화 시작")
+                        prompt = "방금 보호자(아빠/엄마)가 손주 사진을 액자로 보냈어. 어르신께 사진이 하나 도착했다고 생색내면서 알려드리고, '지금 화면에 띄워서 같이 볼까요?' 라고 물어봐줘."
+                        response_text = self.get_openai_response(prompt)
+                        self.speak(response_text)
+                        self.chat_history.append(f"AI: {response_text}")
+
                     user_text = self.listen(source)
                     
                     if not user_text:
@@ -74,6 +109,28 @@ class VoiceAgent:
                     
                     self.chat_history.append(f"사용자: {user_text}")
                     
+                    # 새 사진 수락/거절 분기 처리
+                    if self.is_asking_photo:
+                        if any(word in user_text for word in ["응", "어", "보여줘", "그래", "띄워", "확인"]):
+                            accept_text = "네! 화면에 예쁘게 띄울게요!"
+                            self.speak(accept_text)
+                            self.chat_history.append(f"AI: {accept_text}")
+                            # 프론트엔드로 쏠 수 있도록 main.py 용 브릿지 변수에 할당
+                            self.new_photo_url = self.pending_photo_url 
+                            self.pending_photo_url = None
+                            self.is_asking_photo = False
+                        elif any(word in user_text for word in ["아니", "나중에", "됐어", "안 "]):
+                            decline_text = "알겠어요! 이따가 다시 물어볼게요 헤헤."
+                            self.speak(decline_text)
+                            self.chat_history.append(f"AI: {decline_text}")
+                            self.is_asking_photo = False
+                        else:
+                            # 엉뚱한 대답이면 다시 물어보도록 일반 GPT 응답 (컨텍스트상 다시 묻게 됨)
+                            response_text = self.get_openai_response(user_text)
+                            self.speak(response_text)
+                            self.chat_history.append(f"AI: {response_text}")
+                        continue
+
                     # 대화 종료 키워드 (테스트용)
                     if any(word in user_text for word in ["그만", "들어가", "잘 자", "끊어"]):
                         response_text = "네, 알겠습니다. 푹 쉬세요! 다음에 또 올게요."

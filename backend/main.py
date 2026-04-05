@@ -156,6 +156,13 @@ class FaceDetector:
             "isListening": is_listening,
             "isPillTaken": is_pill_taken,
         }
+        
+        new_photo_url = getattr(self.voice_agent, 'new_photo_url', None)
+        if new_photo_url:
+            payload["newPhotoUrl"] = new_photo_url
+            # 한 번 프론트로 보냈으면 다시 안 보내도록 비움
+            self.voice_agent.new_photo_url = None
+
         disconnected = set()
         for client in self.clients:
             try:

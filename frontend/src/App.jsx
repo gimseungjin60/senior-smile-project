@@ -17,6 +17,7 @@ function App() {
   const [userText, setUserText] = useState('')
   const [isListening, setIsListening] = useState(false)
   const [isPillTaken, setIsPillTaken] = useState(false)
+  const [newPhotoUrl, setNewPhotoUrl] = useState(null)
   const transitionTimer = useRef(null)
 
   // status가 바뀌면 크로스페이드 전환 시작
@@ -34,6 +35,10 @@ function App() {
         setPhase('idle')
       }, TRANSITION_MS)
     }, TRANSITION_MS)
+
+    if (status === 'idle') {
+      setNewPhotoUrl(null)
+    }
 
     return () => clearTimeout(transitionTimer.current)
   }, [status]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -55,6 +60,10 @@ function App() {
           setUserText(data.userText || '')
           setIsListening(data.isListening || false)
           setIsPillTaken(data.isPillTaken || false)
+          
+          if (data.newPhotoUrl) {
+            setNewPhotoUrl(data.newPhotoUrl)
+          }
           return
         }
 
@@ -81,7 +90,7 @@ function App() {
   }, [])
 
   function renderScreen() {
-    const voiceProps = { subtitle, userText, isListening, isPillTaken }
+    const voiceProps = { subtitle, userText, isListening, isPillTaken, newPhotoUrl }
     if (visibleStatus === 'greeting') return <GreetScreen {...voiceProps} />
     if (visibleStatus === 'active') return <ActiveScreen {...voiceProps} />
     return <IdleScreen />
