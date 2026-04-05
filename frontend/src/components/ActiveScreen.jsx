@@ -1,15 +1,16 @@
 import { useState, useEffect } from 'react'
+import SubtitleBar from './SubtitleBar'
 import './ActiveScreen.css'
 
-// MVP: placeholder 슬라이드. 나중에 실제 가족 사진으로 교체
+// 나중에 실제 가족 사진으로 교체
 const SLIDES = [
-  { emoji: '👨‍👩‍👧‍👦', message: '가족들이 항상 응원하고 있어요' },
-  { emoji: '🌸', message: '오늘도 건강하고 행복한 하루 되세요' },
-  { emoji: '☕', message: '따뜻한 차 한 잔 어떠세요?' },
-  { emoji: '🎵', message: '좋아하는 노래를 들으며 쉬어가세요' },
+  { emoji: '👨‍👩‍👧‍👦', label: '가족 사진' },
+  { emoji: '🌸', label: '봄나들이' },
+  { emoji: '☕', label: '오후 한때' },
+  { emoji: '🎵', label: '즐거운 시간' },
 ]
 
-function ActiveScreen() {
+function ActiveScreen({ subtitle, isListening, isPillTaken }) {
   const [slideIndex, setSlideIndex] = useState(0)
 
   useEffect(() => {
@@ -19,21 +20,27 @@ function ActiveScreen() {
     return () => clearInterval(timer)
   }, [])
 
-  const slide = SLIDES[slideIndex]
-
   return (
     <div className="active-screen">
-      <div className="active-content" key={slideIndex}>
-        <div className="active-emoji">{slide.emoji}</div>
-        <p className="active-message">{slide.message}</p>
-        <div className="slide-dots">
+      {/* 왼쪽: 사진 영역 */}
+      <div className="active-photo-area" key={slideIndex}>
+        <div className="active-photo-placeholder">
+          <span className="photo-emoji">{SLIDES[slideIndex].emoji}</span>
+          <span className="photo-label">{SLIDES[slideIndex].label}</span>
+        </div>
+        <div className="slide-progress">
           {SLIDES.map((_, i) => (
             <span
               key={i}
-              className={`dot ${i === slideIndex ? 'dot--active' : ''}`}
+              className={`progress-dot ${i === slideIndex ? 'progress-dot--active' : ''}`}
             />
           ))}
         </div>
+      </div>
+
+      {/* 오른쪽: AI 대화 패널 */}
+      <div className="active-voice-area">
+        <SubtitleBar subtitle={subtitle} isListening={isListening} />
       </div>
     </div>
   )

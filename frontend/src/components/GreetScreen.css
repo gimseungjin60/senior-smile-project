@@ -1,60 +1,101 @@
 .greet-screen {
   width: 100%;
   height: 100%;
-  background: linear-gradient(135deg, #ff9a56, #ff6f61, #ffb347);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  animation: greetFadeIn 0.8s ease-out;
-}
-
-@keyframes greetFadeIn {
-  from {
-    opacity: 0;
-    transform: scale(0.95);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-.greet-content {
+  background: linear-gradient(168deg, #FFFFFF 0%, var(--color-primary-soft) 100%);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 1.5rem;
+  position: relative;
+  overflow: hidden;
+}
+
+.greet-glow {
+  position: absolute;
+  bottom: -20%;
+  left: -10%;
+  width: 50vw;
+  height: 50vw;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(255, 140, 66, 0.08) 0%,
+    rgba(255, 140, 66, 0.02) 50%,
+    transparent 70%
+  );
+  pointer-events: none;
+}
+
+/* ── 위: 인사 영역 ─────────── */
+.greet-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2rem;
   text-align: center;
+  padding: 3rem 2rem 1rem;
+}
+
+.greet-icon-ring {
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  background: var(--color-bg-card);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: greetIconPop 0.9s var(--ease-out-expo) 0.15s both;
+}
+
+@keyframes greetIconPop {
+  from { opacity: 0; transform: scale(0.6); }
+  to   { opacity: 1; transform: scale(1); }
 }
 
 .greet-emoji {
-  font-size: 6rem;
-  animation: wave 1.5s ease-in-out infinite;
+  font-size: 5rem;
+  animation: gentleWave 2.5s ease-in-out infinite;
   transform-origin: 70% 70%;
 }
 
-@keyframes wave {
-  0%, 100% {
-    transform: rotate(0deg);
-  }
-  25% {
-    transform: rotate(20deg);
-  }
-  75% {
-    transform: rotate(-10deg);
-  }
+@keyframes gentleWave {
+  0%, 100% { transform: rotate(0deg); }
+  20%       { transform: rotate(14deg); }
+  40%       { transform: rotate(-6deg); }
+  60%       { transform: rotate(8deg); }
+  80%       { transform: rotate(-2deg); }
 }
 
 .greet-title {
-  font-size: 4.5rem;
-  font-weight: 900;
-  color: #ffffff;
-  text-shadow: 2px 4px 8px rgba(0, 0, 0, 0.2);
-  line-height: 1.2;
+  font-size: 5rem;
+  font-weight: 800;
+  color: var(--color-text-primary);
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+  animation: greetTextUp 0.9s var(--ease-out-expo) 0.25s both;
 }
 
 .greet-subtitle {
-  font-size: 2rem;
+  font-size: 2.4rem;
   font-weight: 400;
-  color: rgba(255, 255, 255, 0.85);
+  color: var(--color-text-secondary);
+  animation: greetTextUp 0.9s var(--ease-out-expo) 0.4s both;
+}
+
+@keyframes greetTextUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── 아래: AI 음성 패널 ─────── */
+.greet-voice-area {
+  width: 100%;
+  max-width: 800px;
+  padding: 0 2.5rem 3rem;
+}
+
+.greet-voice-area .voice-panel {
+  min-height: 140px;
 }

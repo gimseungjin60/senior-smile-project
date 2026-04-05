@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import IdleScreen from './components/IdleScreen'
 import GreetScreen from './components/GreetScreen'
 import ActiveScreen from './components/ActiveScreen'
@@ -6,10 +6,36 @@ import StatusIndicator from './components/StatusIndicator'
 import './App.css'
 
 const WS_URL = 'ws://localhost:8000/ws'
+const TRANSITION_MS = 500
 
 function App() {
   const [status, setStatus] = useState('idle')
+  const [visibleStatus, setVisibleStatus] = useState('idle') // 실제 렌더되는 화면
+  const [phase, setPhase] = useState('idle') // 'idle' | 'exit' | 'enter'
   const [connected, setConnected] = useState(false)
+  const [subtitle, setSubtitle] = useState('')
+  const [isListening, setIsListening] = useState(false)
+  const [isPillTaken, setIsPillTaken] = useState(false)
+  const transitionTimer = useRef(null)
+
+  // status가 바뀌면 크로스페이드 전환 시작
+  useEffect(() => {
+    if (status === visibleStatus) return
+
+    clearTimeout(transitionTimer.current)
+    setPhase('exit')
+
+    transitionTimer.current = setTimeout(() => {
+      setVisibleStatus(status)
+      setPhase('enter')
+
+      transitionTimer.current = setTimeout(() => {
+        setPhase('idle')
+      }, TRANSITION_MS)
+    }, TRANSITION_MS)
+
+    return () => clearTimeout(transitionTimer.current)
+  }, [status]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     let ws
@@ -22,7 +48,18 @@ function App() {
 
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data)
+
+        if (data.type === 'voice') {
+          setSubtitle(data.subtitle || '')
+          setIsListening(data.isListening || false)
+          setIsPillTaken(data.isPillTaken || false)
+          return
+        }
+
         setStatus(data.status)
+        if (data.subtitle !== undefined) setSubtitle(data.subtitle || '')
+        if (data.isListening !== undefined) setIsListening(data.isListening || false)
+        if (data.isPillTaken !== undefined) setIsPillTaken(data.isPillTaken || false)
       }
 
       ws.onclose = () => {
@@ -42,15 +79,18 @@ function App() {
   }, [])
 
   function renderScreen() {
-    if (status === 'greeting') return <GreetScreen />
-    if (status === 'active') return <ActiveScreen />
+    const voiceProps = { subtitle, isListening, isPillTaken }
+    if (visibleStatus === 'greeting') return <GreetScreen {...voiceProps} />
+    if (visibleStatus === 'active') return <ActiveScreen {...voiceProps} />
     return <IdleScreen />
   }
 
   return (
     <div className="app">
       <StatusIndicator connected={connected} status={status} />
-      {renderScreen()}
+      <div className={`screen-wrap screen-wrap--${phase}`}>
+        {renderScreen()}
+      </div>
     </div>
   )
 }

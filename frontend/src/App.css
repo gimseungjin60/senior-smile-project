@@ -1,16 +1,47 @@
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-body {
-  font-family: 'Noto Sans KR', sans-serif;
-  overflow: hidden;
-}
-
 .app {
   width: 100vw;
   height: 100vh;
   position: relative;
+  overflow: hidden;
+}
+
+.screen-wrap {
+  width: 100%;
+  height: 100%;
+}
+
+/* exit: 현재 화면 fade + 살짝 축소 */
+.screen-wrap--exit {
+  animation: screenExit 500ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+/* enter: 새 화면 fade + 살짝 확대 */
+.screen-wrap--enter {
+  animation: screenEnter 500ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes screenExit {
+  from {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0px);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.97);
+    filter: blur(4px);
+  }
+}
+
+@keyframes screenEnter {
+  from {
+    opacity: 0;
+    transform: scale(1.02);
+    filter: blur(4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+    filter: blur(0px);
+  }
 }

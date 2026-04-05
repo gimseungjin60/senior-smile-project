@@ -1,3 +1,38 @@
+:root {
+  /* Toss-inspired palette — warm variant for elderly care */
+  --color-primary: #0064FF;
+  --color-primary-soft: #E8F1FF;
+  --color-primary-muted: #4A90D9;
+
+  --color-bg: #F4F5F7;
+  --color-bg-warm: #FAF9F7;
+  --color-bg-card: #FFFFFF;
+
+  --color-text-primary: #191F28;
+  --color-text-secondary: #4E5968;
+  --color-text-tertiary: #8B95A1;
+  --color-text-disabled: #B0B8C1;
+
+  --color-success: #00C471;
+  --color-danger: #F04452;
+  --color-warm: #FF8C42;
+  --color-warm-soft: #FFF4EC;
+
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.08);
+
+  --radius-sm: 12px;
+  --radius-md: 20px;
+  --radius-lg: 28px;
+  --radius-full: 9999px;
+
+  --font-family: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, system-ui, Roboto, "Helvetica Neue", "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", sans-serif;
+
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-out-soft: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
@@ -10,10 +45,12 @@ html, body, #root {
 }
 
 body {
-  font-family: 'Noto Sans KR', system-ui, sans-serif;
+  font-family: var(--font-family);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
+  background: var(--color-bg);
+  color: var(--color-text-primary);
 }
 
 #root {

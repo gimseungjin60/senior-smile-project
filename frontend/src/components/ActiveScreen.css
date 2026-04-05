@@ -1,58 +1,82 @@
 .active-screen {
   width: 100%;
   height: 100%;
-  background: linear-gradient(135deg, #667eea, #764ba2);
+  background: var(--color-bg);
   display: flex;
-  align-items: center;
-  justify-content: center;
+  flex-direction: row;
 }
 
-.active-content {
+/* ── 왼쪽: 사진 영역 (60%) ───────────────────────────── */
+.active-photo-area {
+  flex: 6;
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2rem;
-  text-align: center;
-  animation: slideFadeIn 0.6s ease-out;
+  justify-content: center;
+  padding: 2.5rem;
+  gap: 1.5rem;
 }
 
-@keyframes slideFadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.active-emoji {
-  font-size: 7rem;
-}
-
-.active-message {
-  font-size: 2.8rem;
-  font-weight: 700;
-  color: #ffffff;
-  text-shadow: 1px 2px 6px rgba(0, 0, 0, 0.2);
-  max-width: 700px;
-  line-height: 1.4;
-}
-
-.slide-dots {
+.active-photo-placeholder {
+  width: 100%;
+  flex: 1;
+  background: var(--color-bg-card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
   display: flex;
-  gap: 0.6rem;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.2rem;
+
+  /* 실제 사진으로 교체 시 아래 스타일 활용:
+     background-image: url(...);
+     background-size: cover;
+     background-position: center;  */
 }
 
-.dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.35);
-  transition: background 0.3s;
+.photo-emoji {
+  font-size: 6rem;
+  opacity: 0.5;
 }
 
-.dot--active {
-  background: #ffffff;
+.photo-label {
+  font-size: 1.4rem;
+  font-weight: 500;
+  color: var(--color-text-disabled);
+}
+
+.slide-progress {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.progress-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: var(--color-text-disabled);
+  transition: all 0.4s var(--ease-out-expo);
+}
+
+.progress-dot--active {
+  background: var(--color-primary);
+  width: 28px;
+}
+
+/* ── 오른쪽: AI 대화 패널 (40%) ─────────────────────── */
+.active-voice-area {
+  flex: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  padding: 2.5rem 2.5rem 2.5rem 0;
+}
+
+.active-voice-area .voice-panel {
+  flex: 1;
+  max-height: 100%;
+  justify-content: center;
 }
