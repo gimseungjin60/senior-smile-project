@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 import cv2
+import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -17,6 +18,11 @@ logger = logging.getLogger(__name__)
 CAMERA_INDEX = 0
 FRAME_INTERVAL = 0.1          # ~10 FPS
 CORS_ORIGINS = ["http://localhost:5173"]
+
+# AI-bum 백엔드 연동
+AIBUM_BACKEND_URL = "http://localhost:8001"
+DEVICE_ID = "frame-001"
+HEARTBEAT_INTERVAL = 60       # 하트비트 전송 간격 (초)
 
 # DNN 감지 설정
 DNN_CONFIDENCE = 0.55         # 이 값 이상만 얼굴로 인정
@@ -58,6 +64,9 @@ class FaceDetector:
 
         # ACTIVE 중 마지막 얼굴 감지 시각 (30초 타이머용)
         self._last_seen: Optional[float] = None
+
+        # 세션 시작 시각 (session_end에서 duration 계산용)
+        self._session_start: Optional[float] = None
 
     async def broadcast(self, status: str):
         messages = {
@@ -101,9 +110,51 @@ class FaceDetector:
         _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
         return face_found, jpeg.tobytes()
 
+    async def _send_event(self, event_type: str, **kwargs):
+        """AI-bum 백엔드로 감지 이벤트 전송 (실패해도 무시)"""
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.post(f"{AIBUM_BACKEND_URL}/api/events", json={
+                    "device_id": DEVICE_ID,
+                    "type": event_type,
+                    **kwargs,
+                })
+            logger.info(f"이벤트 전송: {event_type}")
+        except Exception as e:
+            logger.warning(f"이벤트 전송 실패 (무시): {e}")
+
+    async def _send_heartbeat(self):
+        """AI-bum 백엔드로 하트비트 전송"""
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.post(f"{AIBUM_BACKEND_URL}/api/heartbeat", json={
+                    "device_id": DEVICE_ID,
+                    "current_state": self.current_status,
+                })
+        except Exception:
+            pass  # 하트비트 실패는 조용히 무시
+
+    async def _heartbeat_loop(self):
+        """60초마다 하트비트 전송"""
+        while self.running:
+            await self._send_heartbeat()
+            await asyncio.sleep(HEARTBEAT_INTERVAL)
+
     async def _transition(self, new_status: str):
+        old_status = self.current_status
         self.current_status = new_status
         await self.broadcast(new_status)
+
+        # AI-bum 백엔드에 세션 이벤트 전송
+        if new_status == "greeting" and old_status == "idle":
+            self._session_start = time.time()
+            await self._send_event("session_start")
+        elif new_status == "idle" and old_status == "active":
+            duration = 0
+            if self._session_start:
+                duration = int(time.time() - self._session_start)
+                self._session_start = None
+            await self._send_event("session_end", duration_seconds=duration, smile_count=0)
 
     async def run_detection_loop(self):
         self.camera = cv2.VideoCapture(CAMERA_INDEX)
@@ -174,12 +225,18 @@ detector = FaceDetector()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = asyncio.create_task(detector.run_detection_loop())
+    detection_task = asyncio.create_task(detector.run_detection_loop())
+    heartbeat_task = asyncio.create_task(detector._heartbeat_loop())
     yield
     detector.stop()
-    task.cancel()
+    detection_task.cancel()
+    heartbeat_task.cancel()
     try:
-        await task
+        await detection_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await heartbeat_task
     except asyncio.CancelledError:
         pass
 

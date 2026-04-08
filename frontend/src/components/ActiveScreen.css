@@ -7,6 +7,11 @@
   justify-content: center;
 }
 
+.active-screen--photo {
+  background: #000;
+}
+
+/* 기본 슬라이드 (사진 없을 때) */
 .active-content {
   display: flex;
   flex-direction: column;
@@ -40,9 +45,70 @@
   line-height: 1.4;
 }
 
+/* 사진 슬라이드 */
+.photo-slide {
+  width: 100%;
+  height: 100%;
+  position: relative;
+  animation: photoFadeIn 0.8s ease-out;
+}
+
+@keyframes photoFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(1.02);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.photo-image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.photo-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.7));
+  padding: 3rem 2.5rem 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+}
+
+.photo-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.photo-uploader {
+  font-size: 1.4rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.photo-caption {
+  font-size: 2.2rem;
+  font-weight: 700;
+  color: #ffffff;
+  text-shadow: 1px 2px 8px rgba(0, 0, 0, 0.3);
+  line-height: 1.3;
+  margin: 0;
+}
+
+/* 공통 dots */
 .slide-dots {
   display: flex;
   gap: 0.6rem;
+  justify-content: center;
 }
 
 .dot {
