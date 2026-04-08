@@ -1,0 +1,126 @@
+/* ── VoicePanel: 레이아웃 흐름 안에 자연스럽게 배치 ─────────────── */
+
+.voice-panel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  transition: background 0.4s var(--ease-out-soft),
+              opacity 0.3s var(--ease-out-soft);
+}
+
+.voice-panel--idle {
+  background: transparent;
+  opacity: 0.45;
+}
+
+.voice-panel--active {
+  background: var(--color-bg-card);
+  box-shadow: var(--shadow-md);
+  opacity: 1;
+}
+
+/* 말하는 중 */
+.vp-speech {
+  padding: 2rem 2.4rem;
+  width: 100%;
+}
+
+.vp-speaker {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin-bottom: 1rem;
+}
+
+.vp-speaker-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  animation: speakPulse 1.4s ease-in-out infinite;
+}
+
+@keyframes speakPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.35; transform: scale(0.65); }
+}
+
+.vp-speaker-label {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--color-primary);
+  letter-spacing: 0.02em;
+}
+
+.vp-text {
+  font-size: 2.2rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.6;
+  letter-spacing: -0.01em;
+  word-break: keep-all;
+}
+
+/* 듣는 중 */
+.vp-listening {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1.2rem;
+  padding: 2rem;
+}
+
+.vp-listening-label {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+}
+
+.vp-dots {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.vp-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--color-text-disabled);
+  animation: listenBounce 1.2s ease-in-out infinite;
+}
+
+.vp-dot:nth-child(2) { animation-delay: 0.15s; }
+.vp-dot:nth-child(3) { animation-delay: 0.30s; }
+
+@keyframes listenBounce {
+  0%, 60%, 100% { transform: translateY(0); background: var(--color-text-disabled); }
+  30%            { transform: translateY(-9px); background: var(--color-primary); }
+}
+
+/* 대기 중 */
+.vp-idle {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 1.5rem;
+}
+
+.vp-idle-icon {
+  font-size: 1.8rem;
+  opacity: 0.4;
+}
+
+.vp-idle-text {
+  font-size: 1.1rem;
+  color: var(--color-text-tertiary);
+  font-weight: 500;
+}
+
+
+.vp-listening-container { display: flex; flex-direction: column; gap: 12px; align-items: flex-start; }
+.vp-user-text { font-size: 1.4rem; color: #4E5968; background: #F4F5F7; padding: 12px 20px; border-radius: 12px; margin-top: 8px; animation: fadeInUp 0.4s ease-out forwards; }
+.vp-user-text-label { font-weight: bold; color: #0064FF; display: inline-block; margin-right: 8px; }
+@keyframes fadeInUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }

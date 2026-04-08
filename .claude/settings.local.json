@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git pull:*)",
+      "Bash(git branch:*)",
+      "Bash(npx create-expo-app@latest mobile --template blank)",
+      "Bash(npm install:*)",
+      "Read(//d//**)",
+      "Bash(npx create-expo-app@latest ai-bum-app --template blank)",
+      "Bash(npx expo:*)",
+      "Bash(pip install:*)",
+      "Bash(ls backend/voice_agent.py backend/config.py backend/sounds/ backend/photos/ frontend/src/components/SubtitleBar.* frontend/src/components/UserSpeechBubble.*)"
+    ]
+  }
+}

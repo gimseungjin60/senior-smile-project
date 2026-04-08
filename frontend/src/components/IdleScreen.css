@@ -1,19 +1,38 @@
 .idle-screen {
   width: 100%;
   height: 100%;
-  background: linear-gradient(135deg, #1a1a2e, #16213e, #0f3460);
+  background: var(--color-bg-warm);
   display: flex;
   align-items: center;
   justify-content: center;
-  animation: bgBreath 8s ease-in-out infinite alternate;
+  position: relative;
+  overflow: hidden;
 }
 
-@keyframes bgBreath {
+/* Soft ambient glow — like warm sunlight through curtains */
+.idle-ambient {
+  position: absolute;
+  top: -30%;
+  right: -10%;
+  width: 60vw;
+  height: 60vw;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(0, 100, 255, 0.04) 0%,
+    rgba(0, 100, 255, 0.01) 50%,
+    transparent 70%
+  );
+  animation: ambientDrift 20s var(--ease-out-soft) infinite alternate;
+  pointer-events: none;
+}
+
+@keyframes ambientDrift {
   from {
-    filter: brightness(1);
+    transform: translate(0, 0) scale(1);
   }
   to {
-    filter: brightness(1.15);
+    transform: translate(-5%, 8%) scale(1.1);
   }
 }
 
@@ -21,46 +40,81 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 1.5rem;
+  gap: 1.2rem;
+  animation: idleFadeIn 1s var(--ease-out-expo);
+}
+
+@keyframes idleFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.idle-time-block {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
 }
 
 .clock {
-  font-size: 8rem;
-  font-weight: 300;
-  color: #ffffff;
-  letter-spacing: 0.05em;
+  font-size: 11rem;
+  font-weight: 200;
+  color: var(--color-text-primary);
+  letter-spacing: -0.03em;
   font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.clock-seconds {
+  font-size: 3rem;
+  font-weight: 300;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 0.4rem;
 }
 
 .date {
-  font-size: 2rem;
-  color: rgba(255, 255, 255, 0.7);
+  font-size: 2.4rem;
+  color: var(--color-text-secondary);
   font-weight: 400;
+  letter-spacing: -0.01em;
 }
 
-.divider {
-  width: 120px;
-  height: 1px;
-  background: rgba(255, 255, 255, 0.2);
-}
-
-.weather {
+.idle-weather-card {
   display: flex;
   align-items: center;
   gap: 1rem;
-  color: rgba(255, 255, 255, 0.6);
-  font-size: 1.8rem;
+  margin-top: 1.5rem;
+  padding: 1rem 2rem;
+  background: var(--color-bg-card);
+  border-radius: var(--radius-full);
+  box-shadow: var(--shadow-md);
 }
 
 .weather-icon {
-  font-size: 2.2rem;
+  font-size: 2rem;
 }
 
 .weather-temp {
+  font-size: 2rem;
   font-weight: 700;
-  color: rgba(255, 255, 255, 0.8);
+  color: var(--color-text-primary);
+}
+
+.weather-divider {
+  width: 1px;
+  height: 1.6rem;
+  background: var(--color-text-disabled);
+  opacity: 0.4;
 }
 
 .weather-condition {
-  font-weight: 300;
+  font-size: 1.8rem;
+  font-weight: 400;
+  color: var(--color-text-secondary);
 }
