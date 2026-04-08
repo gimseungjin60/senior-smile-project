@@ -13,3 +13,8 @@ backend/*.pyc
 # Node (frontend/.gitignore에도 있지만 루트에서도 제외)
 frontend/node_modules/
 frontend/dist/
+
+# 보안 키/환경변수
+backend/.env
+backend/serviceAccountKey.json
+*.env

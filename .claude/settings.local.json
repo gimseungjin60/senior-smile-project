@@ -9,7 +9,10 @@
       "Bash(npx create-expo-app@latest ai-bum-app --template blank)",
       "Bash(npx expo:*)",
       "Bash(pip install:*)",
-      "Bash(ls backend/voice_agent.py backend/config.py backend/sounds/ backend/photos/ frontend/src/components/SubtitleBar.* frontend/src/components/UserSpeechBubble.*)"
+      "Bash(ls backend/voice_agent.py backend/config.py backend/sounds/ backend/photos/ frontend/src/components/SubtitleBar.* frontend/src/components/UserSpeechBubble.*)",
+      "Bash(npm ls:*)",
+      "Bash(npm uninstall:*)",
+      "Bash(python3 -m py_compile main.py config.py voice_agent.py)"
     ]
   }
 }
