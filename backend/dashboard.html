@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Senior Smile - 보호자 대시보드</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: "Pretendard", -apple-system, "Noto Sans KR", sans-serif;
+      background: #F4F5F7;
+      color: #191F28;
+      min-height: 100vh;
+    }
+    .header {
+      background: #fff;
+      border-bottom: 1px solid #E5E8EB;
+      padding: 1.2rem 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .header h1 { font-size: 1.4rem; font-weight: 700; }
+    .header .status {
+      display: flex; align-items: center; gap: 0.5rem;
+      font-size: 0.9rem; color: #8B95A1;
+    }
+    .header .status-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #00C471;
+    }
+    .header .status-dot.offline { background: #F04452; }
+
+    .container { max-width: 900px; margin: 0 auto; padding: 2rem 1rem; }
+
+    /* 상태 카드 */
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+    .card {
+      background: #fff; border-radius: 16px; padding: 1.5rem;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+    }
+    .card-label { font-size: 0.85rem; color: #8B95A1; font-weight: 500; margin-bottom: 0.5rem; }
+    .card-value { font-size: 2rem; font-weight: 800; }
+    .card-value.emergency { color: #F04452; }
+    .card-value.ok { color: #00C471; }
+    .card-value.primary { color: #0064FF; }
+
+    /* 세션 목록 */
+    .section-title { font-size: 1.1rem; font-weight: 700; margin-bottom: 1rem; color: #4E5968; }
+    .session-list { display: flex; flex-direction: column; gap: 0.8rem; }
+    .session-item {
+      background: #fff; border-radius: 16px; padding: 1.2rem 1.5rem;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+      cursor: pointer; transition: transform 0.15s;
+    }
+    .session-item:hover { transform: translateY(-2px); box-shadow: 0 4px 16px rgba(0,0,0,0.08); }
+    .session-item.emergency { border-left: 4px solid #F04452; }
+
+    .session-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.6rem; }
+    .session-time { font-size: 0.85rem; color: #8B95A1; }
+    .session-badges { display: flex; gap: 0.4rem; }
+    .badge {
+      font-size: 0.7rem; font-weight: 700; padding: 0.2rem 0.6rem;
+      border-radius: 999px; color: #fff;
+    }
+    .badge.pill { background: #00C471; }
+    .badge.emergency { background: #F04452; }
+    .badge.normal { background: #0064FF; }
+
+    .session-report { font-size: 0.95rem; color: #4E5968; line-height: 1.5; }
+    .session-messages {
+      display: none; margin-top: 1rem; padding-top: 1rem;
+      border-top: 1px solid #E5E8EB;
+    }
+    .session-messages.open { display: block; }
+    .msg { font-size: 0.85rem; padding: 0.3rem 0; color: #4E5968; }
+    .msg.user { color: #0064FF; }
+
+    .empty { text-align: center; padding: 3rem; color: #B0B8C1; font-size: 1.1rem; }
+    .loading { text-align: center; padding: 3rem; color: #8B95A1; }
+
+    .refresh-btn {
+      background: #0064FF; color: #fff; border: none; border-radius: 12px;
+      padding: 0.6rem 1.5rem; font-size: 0.9rem; font-weight: 700;
+      cursor: pointer;
+    }
+    .user-name { font-size: 0.9rem; font-weight: 600; color: #4E5968; }
+    .logout-btn {
+      background: none; border: 1px solid #E5E8EB; border-radius: 8px;
+      padding: 0.4rem 1rem; font-size: 0.8rem; color: #8B95A1; cursor: pointer;
+    }
+    /* 로그인/회원가입 */
+    .auth-overlay {
+      position: fixed; inset: 0; background: #F4F5F7;
+      display: flex; align-items: center; justify-content: center; z-index: 999;
+    }
+    .auth-card {
+      background: #fff; border-radius: 24px; padding: 3rem 2.5rem;
+      box-shadow: 0 8px 40px rgba(0,0,0,0.08); width: 400px; max-width: 90vw;
+      text-align: center;
+    }
+    .auth-card h1 { font-size: 1.8rem; font-weight: 800; margin-bottom: 0.5rem; }
+    .auth-card p { font-size: 0.95rem; color: #8B95A1; margin-bottom: 2rem; }
+    .auth-input {
+      width: 100%; padding: 0.9rem 1rem; border: 1.5px solid #E5E8EB;
+      border-radius: 12px; font-size: 1rem; margin-bottom: 0.8rem;
+      font-family: inherit; outline: none; transition: border 0.2s;
+    }
+    .auth-input:focus { border-color: #0064FF; }
+    .auth-btn {
+      width: 100%; padding: 1rem; border: none; border-radius: 14px;
+      font-size: 1.1rem; font-weight: 700; cursor: pointer; margin-top: 0.5rem;
+      color: #fff; background: #0064FF; transition: opacity 0.2s;
+    }
+    .auth-btn:hover { opacity: 0.9; }
+    .auth-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .auth-switch {
+      margin-top: 1.5rem; font-size: 0.9rem; color: #8B95A1;
+    }
+    .auth-switch a {
+      color: #0064FF; font-weight: 600; cursor: pointer; text-decoration: none;
+    }
+    .auth-error {
+      background: #FFF0F0; color: #D95555; padding: 0.7rem 1rem;
+      border-radius: 10px; font-size: 0.85rem; margin-bottom: 1rem;
+      display: none;
+    }
+    .auth-error.show { display: block; }
+    /* 차트 */
+    .chart-container {
+      background: #fff; border-radius: 16px; padding: 1.5rem;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.04); margin-bottom: 2rem;
+    }
+    /* 음성 메시지 */
+    .voice-section { margin-bottom: 2rem; }
+    .voice-record-area {
+      background: #fff; border-radius: 16px; padding: 1.5rem;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+      display: flex; flex-direction: column; gap: 1rem; align-items: center;
+    }
+    .record-btn {
+      width: 64px; height: 64px; border-radius: 50%; border: none;
+      font-size: 1.8rem; cursor: pointer; transition: transform 0.15s;
+      background: #F04452; color: #fff;
+    }
+    .record-btn.recording { animation: recordPulse 1s infinite; }
+    @keyframes recordPulse { 0%,100%{transform:scale(1)} 50%{transform:scale(1.1)} }
+    .record-btn:not(.recording) { background: #0064FF; }
+    .voice-msg-item {
+      background: #fff; border-radius: 12px; padding: 1rem 1.2rem;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .voice-msg-info { font-size: 0.85rem; color: #4E5968; }
+    .voice-msg-info .sender { font-weight: 700; color: #191F28; }
+    .play-btn {
+      background: #0064FF; color: #fff; border: none; border-radius: 8px;
+      padding: 0.4rem 1rem; font-size: 0.8rem; font-weight: 600; cursor: pointer;
+    }
+    /* 루틴 */
+    .routine-list {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 0.8rem;
+      margin-bottom: 2rem;
+    }
+    .routine-item {
+      background: #fff; border-radius: 12px; padding: 1rem 1.2rem;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+      display: flex; align-items: center; gap: 1rem;
+    }
+    .routine-time { font-size: 1.2rem; font-weight: 800; color: #0064FF; font-variant-numeric: tabular-nums; }
+    .routine-msg { font-size: 0.9rem; color: #4E5968; }
+  </style>
+</head>
+<body>
+  <!-- 로그인/회원가입 오버레이 -->
+  <div class="auth-overlay" id="authOverlay">
+    <div class="auth-card">
+      <!-- 로그인 폼 -->
+      <div id="loginForm">
+        <h1>Senior Smile</h1>
+        <p>보호자 로그인</p>
+        <div class="auth-error" id="loginError"></div>
+        <input class="auth-input" id="loginEmail" type="email" placeholder="이메일">
+        <input class="auth-input" id="loginPw" type="password" placeholder="비밀번호">
+        <button class="auth-btn" onclick="doLogin()">로그인</button>
+        <div class="auth-switch">
+          계정이 없으신가요? <a onclick="showSignup()">회원가입</a>
+        </div>
+      </div>
+      <!-- 회원가입 폼 -->
+      <div id="signupForm" style="display:none">
+        <h1>회원가입</h1>
+        <p>보호자 정보를 입력해주세요</p>
+        <div class="auth-error" id="signupError"></div>
+        <input class="auth-input" id="signupName" type="text" placeholder="이름">
+        <input class="auth-input" id="signupEmail" type="email" placeholder="이메일">
+        <input class="auth-input" id="signupPw" type="password" placeholder="비밀번호 (4자 이상)">
+        <button class="auth-btn" onclick="doSignup()">가입하기</button>
+        <div class="auth-switch">
+          이미 계정이 있으신가요? <a onclick="showLogin()">로그인</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="header">
+    <h1>Senior Smile</h1>
+    <div class="status">
+      <span class="user-name" id="userName"></span>
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">연결 중...</span>
+      <button class="refresh-btn" onclick="loadData()">새로고침</button>
+      <button class="logout-btn" onclick="doLogout()">로그아웃</button>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="cards" id="cards"></div>
+
+    <!-- 감정 트렌드 차트 -->
+    <div class="section-title">감정 트렌드</div>
+    <div class="chart-container">
+      <canvas id="emotionChart" height="200"></canvas>
+    </div>
+
+    <!-- 일일 루틴 -->
+    <div class="section-title">오늘의 루틴</div>
+    <div class="routine-list" id="routineList"></div>
+
+    <!-- 음성 메시지 -->
+    <div class="section-title">음성 메시지</div>
+    <div class="voice-section">
+      <div class="voice-record-area">
+        <p style="font-size:0.9rem;color:#8B95A1">어르신에게 음성 메시지 보내기</p>
+        <button class="record-btn" id="recordBtn" onclick="toggleRecord()">🎤</button>
+        <span id="recordStatus" style="font-size:0.85rem;color:#8B95A1"></span>
+      </div>
+      <div style="margin-top:1rem;display:flex;flex-direction:column;gap:0.6rem" id="voiceMsgList"></div>
+    </div>
+
+    <!-- 대화 기록 -->
+    <div class="section-title">최근 대화 기록</div>
+    <div class="session-list" id="sessionList">
+      <div class="loading">불러오는 중...</div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+
+  <script>
+    const API = window.location.origin
+    let authToken = localStorage.getItem('auth_token')
+    let currentUser = null
+
+    // === 인증 ===
+    function showLogin() {
+      document.getElementById('loginForm').style.display = ''
+      document.getElementById('signupForm').style.display = 'none'
+    }
+    function showSignup() {
+      document.getElementById('loginForm').style.display = 'none'
+      document.getElementById('signupForm').style.display = ''
+    }
+
+    async function doLogin() {
+      const email = document.getElementById('loginEmail').value
+      const pw = document.getElementById('loginPw').value
+      const errEl = document.getElementById('loginError')
+      errEl.className = 'auth-error'
+
+      try {
+        const res = await fetch(`${API}/api/auth/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password: pw })
+        })
+        const data = await res.json()
+        if (data.success) {
+          authToken = data.token
+          currentUser = data.user
+          localStorage.setItem('auth_token', authToken)
+          onAuthSuccess()
+        } else {
+          errEl.textContent = data.error
+          errEl.className = 'auth-error show'
+        }
+      } catch {
+        errEl.textContent = '서버에 연결할 수 없습니다'
+        errEl.className = 'auth-error show'
+      }
+    }
+
+    async function doSignup() {
+      const name = document.getElementById('signupName').value
+      const email = document.getElementById('signupEmail').value
+      const pw = document.getElementById('signupPw').value
+      const errEl = document.getElementById('signupError')
+      errEl.className = 'auth-error'
+
+      try {
+        const res = await fetch(`${API}/api/auth/signup`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password: pw, name })
+        })
+        const data = await res.json()
+        if (data.success) {
+          authToken = data.token
+          currentUser = data.user
+          localStorage.setItem('auth_token', authToken)
+          onAuthSuccess()
+        } else {
+          errEl.textContent = data.error
+          errEl.className = 'auth-error show'
+        }
+      } catch {
+        errEl.textContent = '서버에 연결할 수 없습니다'
+        errEl.className = 'auth-error show'
+      }
+    }
+
+    function doLogout() {
+      localStorage.removeItem('auth_token')
+      authToken = null
+      currentUser = null
+      document.getElementById('authOverlay').style.display = 'flex'
+    }
+
+    function onAuthSuccess() {
+      document.getElementById('authOverlay').style.display = 'none'
+      document.getElementById('userName').textContent = currentUser?.name || ''
+      loadData()
+    }
+
+    // 페이지 로드 시 토큰 확인
+    async function checkAuth() {
+      if (!authToken) {
+        document.getElementById('authOverlay').style.display = 'flex'
+        return
+      }
+      try {
+        const res = await fetch(`${API}/api/auth/me?token=${authToken}`)
+        const data = await res.json()
+        if (data.success) {
+          currentUser = data.user
+          onAuthSuccess()
+        } else {
+          localStorage.removeItem('auth_token')
+          document.getElementById('authOverlay').style.display = 'flex'
+        }
+      } catch {
+        document.getElementById('authOverlay').style.display = 'flex'
+      }
+    }
+
+    // Enter 키로 로그인/회원가입
+    document.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return
+      if (document.getElementById('loginForm').style.display !== 'none') doLogin()
+      else doSignup()
+    })
+
+    async function loadData() {
+      // 상태 조회
+      try {
+        const healthRes = await fetch(`${API}/health`)
+        const health = await healthRes.json()
+        const dot = document.getElementById('statusDot')
+        const text = document.getElementById('statusText')
+        if (health.status === 'ok') {
+          dot.className = 'status-dot'
+          text.textContent = `${health.current_state} | 카메라: ${health.camera}`
+        } else {
+          dot.className = 'status-dot offline'
+          text.textContent = '시스템 이상'
+        }
+      } catch {
+        document.getElementById('statusDot').className = 'status-dot offline'
+        document.getElementById('statusText').textContent = '서버 연결 실패'
+      }
+
+      // 세션 목록
+      try {
+        const res = await fetch(`${API}/api/sessions?limit=30`)
+        const data = await res.json()
+        const sessions = data.sessions || []
+        renderCards(sessions)
+        renderSessions(sessions)
+        renderEmotionChart(sessions)
+      } catch {
+        document.getElementById('sessionList').innerHTML = '<div class="empty">데이터를 불러올 수 없습니다</div>'
+      }
+
+      // 루틴
+      try {
+        const res = await fetch(`${API}/api/routines`)
+        const data = await res.json()
+        renderRoutines(data.routines || [])
+      } catch {}
+
+      // 음성 메시지
+      try {
+        const res = await fetch(`${API}/api/voice-messages`)
+        const data = await res.json()
+        renderVoiceMessages(data.messages || [])
+      } catch {}
+    }
+
+    function renderCards(sessions) {
+      const total = sessions.length
+      const emergencies = sessions.filter(s => s.is_emergency).length
+      const pillDays = sessions.filter(s => s.pill_taken).length
+      const avgMessages = total > 0 ? Math.round(sessions.reduce((a, s) => a + (s.message_count || 0), 0) / total) : 0
+
+      document.getElementById('cards').innerHTML = `
+        <div class="card">
+          <div class="card-label">총 대화 세션</div>
+          <div class="card-value primary">${total}회</div>
+        </div>
+        <div class="card">
+          <div class="card-label">긴급 상황</div>
+          <div class="card-value ${emergencies > 0 ? 'emergency' : 'ok'}">${emergencies > 0 ? emergencies + '회' : '없음'}</div>
+        </div>
+        <div class="card">
+          <div class="card-label">약 복용 확인</div>
+          <div class="card-value ok">${pillDays}회</div>
+        </div>
+        <div class="card">
+          <div class="card-label">평균 대화량</div>
+          <div class="card-value primary">${avgMessages}건</div>
+        </div>
+      `
+    }
+
+    function renderSessions(sessions) {
+      const list = document.getElementById('sessionList')
+      if (!sessions.length) {
+        list.innerHTML = '<div class="empty">아직 대화 기록이 없어요</div>'
+        return
+      }
+
+      list.innerHTML = sessions.map((s, i) => {
+        const date = s.created_at ? new Date(s.created_at) : new Date()
+        const timeStr = date.toLocaleString('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+        const badges = []
+        if (s.is_emergency) badges.push('<span class="badge emergency">긴급</span>')
+        if (s.pill_taken) badges.push('<span class="badge pill">약 복용</span>')
+        if (!s.is_emergency && !s.pill_taken) badges.push('<span class="badge normal">일반</span>')
+
+        const messages = (s.messages || []).map(m => {
+          const isUser = m.startsWith('사용자')
+          return `<div class="msg ${isUser ? 'user' : ''}">${m}</div>`
+        }).join('')
+
+        return `
+          <div class="session-item ${s.is_emergency ? 'emergency' : ''}" onclick="toggleMessages(${i})">
+            <div class="session-header">
+              <span class="session-time">${timeStr} (${s.message_count || 0}건)</span>
+              <div class="session-badges">${badges.join('')}</div>
+            </div>
+            ${s.emotion_report ? `<div class="session-report">${s.emotion_report}</div>` : ''}
+            <div class="session-messages" id="msgs-${i}">${messages || '<div class="msg">대화 내용 없음</div>'}</div>
+          </div>
+        `
+      }).join('')
+    }
+
+    function toggleMessages(i) {
+      const el = document.getElementById(`msgs-${i}`)
+      el.classList.toggle('open')
+    }
+
+    // === 감정 트렌드 차트 ===
+    let emotionChartInstance = null
+
+    function renderEmotionChart(sessions) {
+      // emotion_report에서 점수 추출 (예: "[기분 점수: 85/100점]")
+      const dailyScores = {}
+      sessions.forEach(s => {
+        if (!s.emotion_report || !s.created_at) return
+        const match = s.emotion_report.match(/(\d+)\s*\/\s*100/)
+        if (!match) return
+        const score = parseInt(match[1])
+        const dateKey = s.created_at.split('T')[0]
+        if (!dailyScores[dateKey]) dailyScores[dateKey] = []
+        dailyScores[dateKey].push(score)
+      })
+
+      const dates = Object.keys(dailyScores).sort().slice(-14) // 최근 14일
+      const avgScores = dates.map(d => {
+        const scores = dailyScores[d]
+        return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)
+      })
+      const labels = dates.map(d => {
+        const dt = new Date(d)
+        return `${dt.getMonth()+1}/${dt.getDate()}`
+      })
+
+      if (emotionChartInstance) emotionChartInstance.destroy()
+
+      const ctx = document.getElementById('emotionChart').getContext('2d')
+
+      if (labels.length === 0) {
+        ctx.font = '14px sans-serif'
+        ctx.fillStyle = '#B0B8C1'
+        ctx.textAlign = 'center'
+        ctx.fillText('아직 감정 데이터가 없어요', ctx.canvas.width/2, 100)
+        return
+      }
+
+      emotionChartInstance = new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            label: '기분 점수',
+            data: avgScores,
+            borderColor: '#0064FF',
+            backgroundColor: 'rgba(0,100,255,0.08)',
+            fill: true,
+            tension: 0.4,
+            pointRadius: 6,
+            pointBackgroundColor: avgScores.map(s => s >= 70 ? '#00C471' : s >= 40 ? '#FF8C42' : '#F04452'),
+            pointBorderWidth: 2,
+            pointBorderColor: '#fff',
+          }]
+        },
+        options: {
+          responsive: true,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: (ctx) => `기분: ${ctx.raw}/100점`
+              }
+            }
+          },
+          scales: {
+            y: { min: 0, max: 100, ticks: { stepSize: 20 } }
+          }
+        }
+      })
+    }
+
+    // === 루틴 ===
+    function renderRoutines(routines) {
+      const el = document.getElementById('routineList')
+      const typeIcons = { morning: '🌅', pill: '💊', lunch: '🍚', activity: '🚶', dinner: '🍽️', night: '🌙' }
+      el.innerHTML = routines.map(r => `
+        <div class="routine-item">
+          <span class="routine-time">${r.time}</span>
+          <span style="font-size:1.4rem">${typeIcons[r.type] || '📋'}</span>
+          <span class="routine-msg">${r.message || '(기존 스케줄러)'}</span>
+        </div>
+      `).join('')
+    }
+
+    // === 음성 메시지 ===
+    let mediaRecorder = null
+    let audioChunks = []
+    let isRecording = false
+
+    async function toggleRecord() {
+      const btn = document.getElementById('recordBtn')
+      const status = document.getElementById('recordStatus')
+
+      if (!isRecording) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+          mediaRecorder = new MediaRecorder(stream)
+          audioChunks = []
+          mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data)
+          mediaRecorder.onstop = async () => {
+            const blob = new Blob(audioChunks, { type: 'audio/webm' })
+            const form = new FormData()
+            form.append('file', blob, 'message.webm')
+            form.append('sender', '보호자')
+            try {
+              await fetch(`${API}/api/voice-messages/send`, { method: 'POST', body: form })
+              status.textContent = '전송 완료!'
+              setTimeout(() => { status.textContent = ''; loadData() }, 2000)
+            } catch { status.textContent = '전송 실패' }
+            stream.getTracks().forEach(t => t.stop())
+          }
+          mediaRecorder.start()
+          isRecording = true
+          btn.classList.add('recording')
+          btn.textContent = '⏹️'
+          status.textContent = '녹음 중...'
+        } catch { status.textContent = '마이크 권한이 필요합니다' }
+      } else {
+        mediaRecorder.stop()
+        isRecording = false
+        btn.classList.remove('recording')
+        btn.textContent = '🎤'
+        status.textContent = '전송 중...'
+      }
+    }
+
+    function renderVoiceMessages(messages) {
+      const el = document.getElementById('voiceMsgList')
+      if (!messages.length) {
+        el.innerHTML = '<div class="empty" style="padding:1rem">음성 메시지가 없어요</div>'
+        return
+      }
+      el.innerHTML = messages.slice(0, 20).map(m => {
+        const date = m.created_at ? new Date(m.created_at) : new Date()
+        const timeStr = date.toLocaleString('ko-KR', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' })
+        const dir = m.direction === 'to_senior' ? '➡️ 어르신에게' : '⬅️ 어르신으로부터'
+        const text = m.text ? ` "${m.text}"` : ''
+        return `
+          <div class="voice-msg-item">
+            <div class="voice-msg-info">
+              <span class="sender">${m.sender}</span> ${dir}${text}
+              <div style="font-size:0.75rem;color:#B0B8C1;margin-top:0.2rem">${timeStr}</div>
+            </div>
+            <button class="play-btn" onclick="playVoice('${m.id}')">재생</button>
+          </div>
+        `
+      }).join('')
+    }
+
+    function playVoice(msgId) {
+      const audio = new Audio(`${API}/api/voice-messages/${msgId}/audio`)
+      audio.play()
+    }
+
+    checkAuth()
+    setInterval(() => { if (authToken) loadData() }, 30000)
+  </script>
+</body>
+</html>

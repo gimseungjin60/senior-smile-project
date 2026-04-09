@@ -1,47 +1,89 @@
 .app {
   width: 100vw;
   height: 100vh;
-  position: relative;
+  background: var(--color-bg);
   overflow: hidden;
 }
 
+/* === Idle: 전체화면 === */
 .screen-wrap {
   width: 100%;
   height: 100%;
 }
 
-/* exit: 현재 화면 fade + 살짝 축소 */
+/* === Active/Greeting: 좌우 분할 === */
+.app-split {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  padding: 1.2rem;
+  gap: 1.2rem;
+}
+
+/* 왼쪽: 메인 콘텐츠 (사진/슬라이드/인사) */
+.split-main {
+  flex: 1;
+  background: var(--color-bg-card);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+
+/* 오른쪽: 음성 대화 사이드바 */
+.split-side {
+  width: 340px;
+  min-width: 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* 음성 패널 (사이드바 내부) */
+.side-voice-panel {
+  flex: 1;
+  background: var(--color-bg-card);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  padding: 2rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+/* 긴급 배너 */
+.side-emergency {
+  background: var(--color-danger);
+  color: #fff;
+  border-radius: var(--radius-sm);
+  padding: 1rem 1.2rem;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 1.1rem;
+  font-weight: 700;
+  animation: emergencyPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes emergencyPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.8; }
+}
+
+/* === 화면 전환 === */
 .screen-wrap--exit {
   animation: screenExit 500ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
 }
 
-/* enter: 새 화면 fade + 살짝 확대 */
 .screen-wrap--enter {
   animation: screenEnter 500ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 @keyframes screenExit {
-  from {
-    opacity: 1;
-    transform: scale(1);
-    filter: blur(0px);
-  }
-  to {
-    opacity: 0;
-    transform: scale(0.97);
-    filter: blur(4px);
-  }
+  from { opacity: 1; transform: scale(1); }
+  to { opacity: 0; transform: scale(0.98); }
 }
 
 @keyframes screenEnter {
-  from {
-    opacity: 0;
-    transform: scale(1.02);
-    filter: blur(4px);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-    filter: blur(0px);
-  }
+  from { opacity: 0; transform: scale(1.01); }
+  to { opacity: 1; transform: scale(1); }
 }

@@ -1,10 +1,27 @@
 import os
+import uuid
+import json
 from pathlib import Path
 from dotenv import load_dotenv
 
 # .env 파일 로드
 env_path = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=env_path)
+
+# ==========================================
+# 디바이스 ID (자동 생성, 최초 1회)
+# ==========================================
+_device_file = Path(__file__).parent / "device_id.json"
+
+def _get_or_create_device_id() -> str:
+    if _device_file.exists():
+        data = json.loads(_device_file.read_text(encoding="utf-8"))
+        return data.get("device_id", "")
+    device_id = f"frame-{uuid.uuid4().hex[:8]}"
+    _device_file.write_text(json.dumps({"device_id": device_id}), encoding="utf-8")
+    return device_id
+
+DEVICE_ID = _get_or_create_device_id()
 
 # ==========================================
 # 기본 설정
@@ -38,3 +55,33 @@ SOUNDS_DIR = Path(__file__).parent / "sounds"
 # 스케줄러 설정
 # ==========================================
 PILL_TIME = "09:00"
+
+# ==========================================
+# 날씨 설정
+# ==========================================
+WEATHER_API_KEY = os.environ.get("WEATHER_API_KEY", "")
+WEATHER_CITY = os.environ.get("WEATHER_CITY", "Seoul")
+
+# ==========================================
+# 야간 모드 설정
+# ==========================================
+NIGHT_START = os.environ.get("NIGHT_START", "22:00")
+NIGHT_END = os.environ.get("NIGHT_END", "07:00")
+
+# ==========================================
+# 음성 메시지 설정
+# ==========================================
+VOICE_MSG_DIR = Path(__file__).parent / "voice_messages"
+VOICE_MSG_DIR.mkdir(exist_ok=True)
+
+# ==========================================
+# 일일 루틴 설정
+# ==========================================
+DAILY_ROUTINES = [
+    {"time": "07:00", "type": "morning",  "message": "좋은 아침이에요! 오늘도 건강한 하루 보내세요."},
+    {"time": "09:00", "type": "pill",     "message": ""},  # 기존 복약 스케줄러 사용
+    {"time": "12:00", "type": "lunch",    "message": "점심 시간이에요! 맛있는 거 드세요."},
+    {"time": "15:00", "type": "activity", "message": "잠깐 스트레칭 하시는 건 어떠세요? 몸이 가벼워져요!"},
+    {"time": "18:00", "type": "dinner",   "message": "저녁 식사 시간이에요! 든든하게 드세요."},
+    {"time": "21:00", "type": "night",    "message": "오늘 하루도 수고하셨어요. 편안한 밤 되세요."},
+]
