@@ -1,7 +1,7 @@
 .active-screen {
   width: 100%;
   height: 100%;
-  background: linear-gradient(160deg, #FFFAF5 0%, #FFF0E6 100%);
+  background: #FFFFFF;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -9,23 +9,14 @@
   position: relative;
 }
 
-.active-screen--photo {
-  background: #1A1510;
-}
-
-/* 기본 슬라이드 */
+/* === 기본 슬라이드 (사진 없을 때) === */
 .active-content {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 1.5rem;
   text-align: center;
-  animation: slideFadeIn 0.8s ease-out;
-}
-
-@keyframes slideFadeIn {
-  from { opacity: 0; transform: translateY(15px); }
-  to { opacity: 1; transform: translateY(0); }
+  animation: contentFadeUp 0.6s var(--ease-out-expo);
 }
 
 .active-emoji {
@@ -41,51 +32,74 @@
   word-break: keep-all;
 }
 
-/* 사진 슬라이드 */
-.photo-slide {
+/* === 사진 카드 레이아웃 === */
+.photo-card-layout {
   width: 100%;
   height: 100%;
-  position: relative;
-  animation: photoFadeIn 0.8s ease-out;
+  display: flex;
+  flex-direction: column;
+  padding: 2rem;
+  gap: 1.2rem;
 }
 
-@keyframes photoFadeIn {
-  from { opacity: 0; transform: scale(1.02); }
-  to { opacity: 1; transform: scale(1); }
+/* 사진 카드 */
+.photo-card {
+  flex: 1;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: #F0F0F0;
+  box-shadow: var(--shadow-md);
+  position: relative;
+  min-height: 0;
+}
+
+/* 크로스페이드 레이어 */
+.photo-layer {
+  position: absolute;
+  inset: 0;
+}
+
+.photo-layer--entering {
+  opacity: 0;
+  animation: photoCrossFade 0.7s ease forwards;
+}
+
+@keyframes photoCrossFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .photo-image {
   width: 100%;
   height: 100%;
   object-fit: contain;
-  background: #1A1510;
+  background: #F5F5F5;
 }
 
-.photo-overlay {
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  background: linear-gradient(transparent, rgba(26, 21, 16, 0.75));
-  padding: 3rem 2rem 1.5rem;
+/* 사진 하단 정보 바 */
+.photo-info-bar {
   display: flex;
-  flex-direction: column;
-  gap: 1rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0.5rem;
 }
 
-.photo-info { display: flex; flex-direction: column; gap: 0.4rem; }
+.photo-info {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
 
 .photo-uploader {
   font-size: 1.3rem;
   font-weight: 600;
-  color: rgba(255, 250, 245, 0.85);
+  color: var(--color-text-secondary);
 }
 
 .photo-caption {
-  font-size: 2rem;
+  font-size: 1.5rem;
   font-weight: 700;
-  color: #FFFAF5;
-  line-height: 1.3;
+  color: var(--color-text-primary);
   margin: 0;
 }
 
@@ -93,53 +107,71 @@
 .slide-dots {
   display: flex;
   gap: 0.5rem;
-  justify-content: center;
+  align-items: center;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-text-disabled);
+  transition: all 0.3s;
+}
+
+.dot--active {
+  background: var(--color-primary);
+  width: 24px;
+  border-radius: 5px;
+}
+
+/* 기본 슬라이드의 dots (가운데 하단) */
+.slide-dots--center {
   position: absolute;
   bottom: 1.5rem;
   left: 50%;
   transform: translateX(-50%);
 }
 
-.dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: rgba(212, 132, 90, 0.25);
-  transition: all 0.3s;
-}
-
-.dot--active {
-  background: var(--color-primary);
-  width: 28px;
-  border-radius: 5px;
-}
-
-/* 새 사진 표시 */
+/* === 새 사진 표시 === */
 .new-photo-display {
   width: 100%;
   height: 100%;
-  position: relative;
-  animation: photoZoomIn 0.8s ease-out;
+  display: flex;
+  flex-direction: column;
+  padding: 2rem;
+  gap: 1.2rem;
+  animation: contentFadeUp 0.6s var(--ease-out-expo);
 }
 
-@keyframes photoZoomIn {
-  from { opacity: 0; transform: scale(1.05); }
-  to { opacity: 1; transform: scale(1); }
+.new-photo-card {
+  flex: 1;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: #F0F0F0;
+  box-shadow: var(--shadow-md);
+  position: relative;
+  min-height: 0;
+}
+
+.new-photo-card .photo-image {
+  object-fit: contain;
+  background: #F5F5F5;
 }
 
 .new-photo-badge {
   position: absolute;
-  top: 1.5rem;
+  top: 1.2rem;
   left: 50%;
   transform: translateX(-50%);
   background: var(--color-warm);
   color: #fff;
-  font-size: 1.4rem;
+  font-size: 1.3rem;
   font-weight: 700;
-  padding: 0.7rem 1.8rem;
+  padding: 0.6rem 1.6rem;
   border-radius: var(--radius-full);
-  animation: badgeBounce 0.6s ease-out;
+  animation: badgeBounce 0.6s var(--ease-out-expo) 0.2s both;
   z-index: 5;
+  white-space: nowrap;
 }
 
 @keyframes badgeBounce {
@@ -149,20 +181,15 @@
 }
 
 .new-photo-timer {
-  position: absolute;
-  bottom: 80px;
-  left: 2rem;
-  right: 2rem;
   height: 4px;
-  background: rgba(255, 250, 245, 0.15);
+  background: var(--color-text-disabled);
   border-radius: 2px;
   overflow: hidden;
-  z-index: 5;
 }
 
 .new-photo-timer-bar {
   height: 100%;
-  background: rgba(255, 250, 245, 0.6);
+  background: var(--color-warm);
   border-radius: 2px;
   animation: timerShrink 20s linear forwards;
 }
@@ -170,4 +197,10 @@
 @keyframes timerShrink {
   from { width: 100%; }
   to { width: 0%; }
+}
+
+/* === 공통 === */
+@keyframes contentFadeUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
 }

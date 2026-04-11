@@ -1,30 +1,29 @@
 :root {
-  /* 어르신 친화 따뜻한 팔레트 */
-  --color-primary: #D4845A;
-  --color-primary-soft: #FFF0E6;
-  --color-primary-muted: #C0916E;
+  --color-primary: #3182F6;
+  --color-primary-soft: #E8F3FF;
+  --color-primary-muted: #4A9BFF;
 
-  --color-bg: #FBF7F2;
-  --color-bg-warm: #F5EDE4;
+  --color-bg: #F4F5F7;
+  --color-bg-warm: #F0F1F3;
   --color-bg-card: #FFFFFF;
 
-  --color-text-primary: #2D2017;
-  --color-text-secondary: #6B5B4E;
-  --color-text-tertiary: #9E8E80;
-  --color-text-disabled: #C4B5A6;
+  --color-text-primary: #191F28;
+  --color-text-secondary: #4E5968;
+  --color-text-tertiary: #8B95A1;
+  --color-text-disabled: #B0B8C1;
 
-  --color-success: #5DAE72;
-  --color-danger: #D95555;
-  --color-warm: #E8944A;
+  --color-success: #00C471;
+  --color-danger: #F04452;
+  --color-warm: #FF8B00;
   --color-warm-soft: #FFF4EC;
 
-  --shadow-sm: 0 2px 8px rgba(45, 32, 23, 0.04);
-  --shadow-md: 0 4px 20px rgba(45, 32, 23, 0.07);
-  --shadow-lg: 0 8px 40px rgba(45, 32, 23, 0.10);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 2px 12px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 6px 24px rgba(0, 0, 0, 0.08);
 
   --radius-sm: 16px;
   --radius-md: 24px;
-  --radius-lg: 32px;
+  --radius-lg: 28px;
   --radius-full: 9999px;
 
   --font-family: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, system-ui, Roboto, "Helvetica Neue", "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", "Malgun Gothic", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", sans-serif;

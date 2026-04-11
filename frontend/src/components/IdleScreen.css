@@ -1,7 +1,7 @@
 .idle-screen {
   width: 100%;
   height: 100%;
-  background: linear-gradient(160deg, #FFFAF5 0%, #FFF0E6 100%);
+  background: #FFFFFF;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -18,8 +18,8 @@
   border-radius: 50%;
   background: radial-gradient(
     circle,
-    rgba(212, 132, 90, 0.06) 0%,
-    rgba(212, 132, 90, 0.02) 50%,
+    rgba(49, 130, 246, 0.04) 0%,
+    rgba(49, 130, 246, 0.01) 50%,
     transparent 70%
   );
   animation: ambientDrift 25s var(--ease-out-soft) infinite alternate;
@@ -79,10 +79,9 @@
   gap: 1rem;
   margin-top: 1.5rem;
   padding: 1rem 2rem;
-  background: rgba(255, 255, 255, 0.7);
+  background: var(--color-bg);
   border-radius: var(--radius-full);
   box-shadow: var(--shadow-sm);
-  backdrop-filter: blur(8px);
 }
 
 .weather-icon { font-size: 2rem; }
@@ -108,24 +107,24 @@
 
 /* 야간 모드 */
 .idle-screen--night {
-  background: linear-gradient(160deg, #1A1510 0%, #0D0B08 100%);
+  background: #111111;
   transition: background 2s ease;
 }
 
-.idle-screen--night .clock { color: rgba(255,245,230,0.5); font-weight: 100; }
-.idle-screen--night .clock-seconds { color: rgba(255,245,230,0.2); }
-.idle-screen--night .date { color: rgba(255,245,230,0.25); }
+.idle-screen--night .clock { color: rgba(255,255,255,0.5); font-weight: 100; }
+.idle-screen--night .clock-seconds { color: rgba(255,255,255,0.2); }
+.idle-screen--night .date { color: rgba(255,255,255,0.25); }
 .idle-screen--night .idle-weather-card { background: rgba(255,255,255,0.05); box-shadow: none; }
-.idle-screen--night .weather-temp { color: rgba(255,245,230,0.4); }
-.idle-screen--night .weather-condition { color: rgba(255,245,230,0.25); }
-.idle-screen--night .weather-divider { background: rgba(255,245,230,0.1); }
+.idle-screen--night .weather-temp { color: rgba(255,255,255,0.4); }
+.idle-screen--night .weather-condition { color: rgba(255,255,255,0.25); }
+.idle-screen--night .weather-divider { background: rgba(255,255,255,0.1); }
 .idle-screen--night .idle-ambient { opacity: 0; }
 
 /* 페어링 카드 */
 .pairing-card {
   margin-top: 2rem;
   padding: 2.5rem 3rem;
-  background: rgba(255, 255, 255, 0.8);
+  background: var(--color-bg);
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-md);
   display: flex;
@@ -133,7 +132,6 @@
   align-items: center;
   gap: 1.2rem;
   animation: idleFadeIn 0.8s var(--ease-out-expo);
-  backdrop-filter: blur(8px);
 }
 
 .pairing-title {

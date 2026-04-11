@@ -1,12 +1,18 @@
-/* 사이드바 음성 패널 */
+/* === 음성 패널 컨테이너 === */
 .voice-panel {
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
   border-radius: var(--radius-sm);
-  transition: background 0.4s, opacity 0.3s;
+  transition: opacity 0.4s;
   min-height: 120px;
+  padding: 1.5rem;
+  gap: 1.2rem;
+}
+
+.voice-panel--has-content {
+  padding: 2rem;
 }
 
 .voice-panel--idle {
@@ -17,9 +23,39 @@
   opacity: 1;
 }
 
-/* AI 답변 */
+/* === 사용자 텍스트 === */
+.vp-user-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  width: 100%;
+  background: var(--color-bg);
+  padding: 0.8rem 1rem;
+  border-radius: var(--radius-sm);
+  animation: vpFadeIn 0.4s var(--ease-out-expo);
+}
+
+.vp-user-text--alone {
+  margin-bottom: 0;
+}
+
+.vp-user-text-label {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--color-primary);
+  letter-spacing: 0.02em;
+}
+
+.vp-user-text-content {
+  font-size: 1.15rem;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+/* === AI 답변 === */
 .vp-speech {
   width: 100%;
+  animation: vpFadeIn 0.3s var(--ease-out-expo);
 }
 
 .vp-speaker {
@@ -49,19 +85,20 @@
 }
 
 .vp-text {
-  font-size: 1.6rem;
+  font-size: 1.5rem;
   font-weight: 600;
   color: var(--color-text-primary);
   line-height: 1.6;
   word-break: keep-all;
 }
 
-/* 듣는 중 */
+/* === 듣는 중 === */
 .vp-listening {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 1rem;
+  width: 100%;
 }
 
 .vp-listening-label {
@@ -92,12 +129,13 @@
   30% { transform: translateY(-8px); background: var(--color-primary); }
 }
 
-/* 대기 중 */
+/* === 대기 중 === */
 .vp-idle {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 0.5rem;
+  width: 100%;
 }
 
 .vp-idle-icon {
@@ -111,25 +149,8 @@
   font-weight: 500;
 }
 
-/* 사용자 텍스트 */
-.vp-user-text {
-  font-size: 1.2rem;
-  color: var(--color-text-secondary);
-  background: var(--color-bg-warm);
-  padding: 0.8rem 1rem;
-  border-radius: var(--radius-sm);
-  margin-bottom: 1rem;
-  width: 100%;
-  animation: fadeInUp 0.4s ease-out;
-}
-
-.vp-user-text-label {
-  font-weight: 700;
-  color: var(--color-primary);
-  margin-right: 0.5rem;
-}
-
-@keyframes fadeInUp {
-  from { opacity: 0; transform: translateY(8px); }
+/* === 공통 애니메이션 === */
+@keyframes vpFadeIn {
+  from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: translateY(0); }
 }

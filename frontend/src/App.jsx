@@ -4,6 +4,7 @@ import GreetScreen from './components/GreetScreen'
 import ActiveScreen from './components/ActiveScreen'
 import StatusIndicator from './components/StatusIndicator'
 import SubtitleBar from './components/SubtitleBar'
+import ReminderScreen from './components/ReminderScreen'
 import './App.css'
 
 const WS_URL = 'ws://localhost:8000/ws'
@@ -21,8 +22,13 @@ function App() {
   const [newPhotoUrl, setNewPhotoUrl] = useState(null)
   const [isEmergency, setIsEmergency] = useState(false)
   const [pairing, setPairing] = useState(null)
+  const [isConversationActive, setIsConversationActive] = useState(false)
+  const [activeReminder, setActiveReminder] = useState(null)
+  const [reminderExiting, setReminderExiting] = useState(false)
   const transitionTimer = useRef(null)
+  const reminderExitTimer = useRef(null)
 
+  // 화면 전환 애니메이션
   useEffect(() => {
     if (status === visibleStatus) return
     clearTimeout(transitionTimer.current)
@@ -39,6 +45,7 @@ function App() {
     return () => clearTimeout(transitionTimer.current)
   }, [status]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // WebSocket 연결
   useEffect(() => {
     let ws
     let reconnectTimer
@@ -51,6 +58,16 @@ function App() {
         try { data = JSON.parse(event.data) }
         catch { return }
 
+        if (data.type === 'reminder') {
+          setActiveReminder({
+            reminderType: data.reminderType,
+            title: data.title,
+            message: data.message,
+            time: data.time,
+          })
+          return
+        }
+
         if (data.type === 'voice') {
           setSubtitle(data.subtitle || '')
           setUserText(data.userText || '')
@@ -58,12 +75,15 @@ function App() {
           setIsPillTaken(data.isPillTaken || false)
           if (data.isEmergency) setIsEmergency(true)
           if (data.newPhotoUrl) setNewPhotoUrl(data.newPhotoUrl)
+          if (data.isConversationActive !== undefined) setIsConversationActive(data.isConversationActive)
           return
         }
+
         if (data.status) setStatus(data.status)
         if (data.subtitle !== undefined) setSubtitle(data.subtitle || '')
         if (data.isListening !== undefined) setIsListening(data.isListening || false)
         if (data.isPillTaken !== undefined) setIsPillTaken(data.isPillTaken || false)
+        if (data.isConversationActive !== undefined) setIsConversationActive(data.isConversationActive || false)
         if (data.pairing) setPairing(data.pairing)
       }
       ws.onclose = () => {
@@ -77,46 +97,72 @@ function App() {
     return () => { clearTimeout(reconnectTimer); if (ws) ws.close() }
   }, [])
 
-  // idle 화면: 시간/날씨만, 분할 없음
-  const isIdle = visibleStatus === 'idle'
-  // greeting/active 화면: 좌우 분할
-  const isActive = visibleStatus === 'greeting' || visibleStatus === 'active'
+  // 리마인더는 카운트다운으로만 자동 dismiss (voice 패널과 공존 가능)
+
+  // 테스트용 키보드 단축키 (개발 환경에서만)
+  useEffect(() => {
+    function handleKey(e) {
+      if (e.key === '1') setStatus('idle')
+      if (e.key === '2') setStatus('greeting')
+      if (e.key === '3') setStatus('active')
+      if (e.key === 'c') setIsConversationActive((v) => !v)
+      if (e.key === 'r') setActiveReminder({
+        reminderType: 'pill', title: '약 드실 시간이에요!',
+        message: '잊지 말고 꼭 챙겨 드세요!', time: '09:00',
+      })
+      if (e.key === 'l') { setIsListening(true); setSubtitle('네, 말씀하세요!'); setUserText('앨범아') }
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [])
+
+  function dismissReminder() {
+    setReminderExiting(true)
+    clearTimeout(reminderExitTimer.current)
+    reminderExitTimer.current = setTimeout(() => {
+      setActiveReminder(null)
+      setReminderExiting(false)
+    }, 400)
+  }
+
+  function renderBaseContent() {
+    if (visibleStatus === 'idle') return <IdleScreen pairing={pairing} />
+    if (visibleStatus === 'greeting') return <GreetScreen />
+    return <ActiveScreen newPhotoUrl={newPhotoUrl} />
+  }
 
   return (
     <div className="app">
-      {isIdle && (
-        <div className={`screen-wrap screen-wrap--${phase}`}>
-          <IdleScreen pairing={pairing} />
+      {/* 메인 콘텐츠 — 호출어 인식 시 오른쪽으로 밀림 */}
+      <div className={`app-main ${isConversationActive ? 'app-main--pushed' : ''}`}>
+        {/* 기본 화면 — 항상 마운트 상태 유지 */}
+        <div key={visibleStatus} className={`screen-anim screen-anim--${phase}`}>
+          {renderBaseContent()}
         </div>
-      )}
 
-      {isActive && (
-        <div className={`app-split screen-wrap--${phase}`}>
-          {/* 왼쪽: 콘텐츠 영역 */}
-          <div className="split-main">
-            {visibleStatus === 'greeting'
-              ? <GreetScreen />
-              : <ActiveScreen newPhotoUrl={newPhotoUrl} />
-            }
+        {/* 리마인더 — 기본 화면 위 오버레이 */}
+        {activeReminder && (
+          <div className="reminder-overlay">
+            <ReminderScreen reminder={activeReminder} exiting={reminderExiting} onDismiss={dismissReminder} />
           </div>
+        )}
+      </div>
 
-          {/* 오른쪽: 음성 대화 영역 */}
-          <div className="split-side">
-            <StatusIndicator connected={connected} status={status} />
-
-            {isEmergency && (
-              <div className="side-emergency">
-                <span>🚨</span>
-                <span>보호자에게 알림 전송됨</span>
-              </div>
-            )}
-
-            <div className="side-voice-panel">
-              <SubtitleBar subtitle={subtitle} userText={userText} isListening={isListening} />
-            </div>
-          </div>
+      {/* 음성 패널 — 호출어 인식 시 오른쪽에서 슬라이드인 */}
+      <div className={`voice-side-panel ${isConversationActive ? 'voice-side-panel--open' : ''}`}>
+        <div className="side-status">
+          <StatusIndicator connected={connected} status={status} />
         </div>
-      )}
+        {isEmergency && (
+          <div className="side-emergency">
+            <span>🚨</span>
+            <span>보호자에게 알림 전송됨</span>
+          </div>
+        )}
+        <div className="side-voice-panel">
+          <SubtitleBar subtitle={subtitle} userText={userText} isListening={isListening} />
+        </div>
+      </div>
     </div>
   )
 }

@@ -1,50 +1,56 @@
 .app {
   width: 100vw;
   height: 100vh;
-  background: var(--color-bg);
+  background: #F5F5F5;
   overflow: hidden;
+  position: relative;
 }
 
-/* === Idle: 전체화면 === */
-.screen-wrap {
-  width: 100%;
+/* === 메인 콘텐츠 — 기본: 화면 100% === */
+.app-main {
+  position: absolute;
+  inset: 0;
+  transition: right 0.5s var(--ease-out-expo);
+  will-change: right;
+}
+
+/* 호출어 인식 → 패널 너비만큼 밀림 */
+.app-main--pushed {
+  right: 320px;
+}
+
+/* === 음성 패널 — 오른쪽에서 슬라이드인 === */
+.voice-side-panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 320px;
   height: 100%;
-}
-
-/* === Active/Greeting: 좌우 분할 === */
-.app-split {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  padding: 1.2rem;
-  gap: 1.2rem;
-}
-
-/* 왼쪽: 메인 콘텐츠 (사진/슬라이드/인사) */
-.split-main {
-  flex: 1;
-  background: var(--color-bg-card);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-md);
-  overflow: hidden;
-}
-
-/* 오른쪽: 음성 대화 사이드바 */
-.split-side {
-  width: 340px;
-  min-width: 300px;
+  background: #FFFFFF;
+  border-left: 1px solid rgba(0, 0, 0, 0.06);
+  transform: translateX(100%);
+  transition: transform 0.5s var(--ease-out-expo);
+  will-change: transform;
   display: flex;
   flex-direction: column;
+  padding: 1.6rem;
   gap: 1rem;
+  overflow: hidden;
 }
 
-/* 음성 패널 (사이드바 내부) */
+.voice-side-panel--open {
+  transform: translateX(0);
+}
+
+/* 패널 내부: 상태 표시 */
+.side-status {
+  padding-bottom: 1rem;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+/* 패널 내부: 음성 자막 */
 .side-voice-panel {
   flex: 1;
-  background: var(--color-bg-card);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-sm);
-  padding: 2rem 1.5rem;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -66,24 +72,36 @@
 
 @keyframes emergencyPulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.8; }
+  50% { opacity: 0.75; }
 }
 
-/* === 화면 전환 === */
-.screen-wrap--exit {
-  animation: screenExit 500ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+/* 리마인더 오버레이 */
+.reminder-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
 }
 
-.screen-wrap--enter {
-  animation: screenEnter 500ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+/* === 화면 전환 애니메이션 === */
+.screen-anim {
+  width: 100%;
+  height: 100%;
+}
+
+.screen-anim--exit {
+  animation: screenExit 400ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+.screen-anim--enter {
+  animation: screenEnter 400ms var(--ease-out-expo) forwards;
 }
 
 @keyframes screenExit {
-  from { opacity: 1; transform: scale(1); }
-  to { opacity: 0; transform: scale(0.98); }
+  from { opacity: 1; }
+  to { opacity: 0; }
 }
 
 @keyframes screenEnter {
-  from { opacity: 0; transform: scale(1.01); }
-  to { opacity: 1; transform: scale(1); }
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
