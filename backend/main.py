@@ -166,10 +166,11 @@ class FaceDetector:
             is_emergency = getattr(self.voice_agent, 'is_emergency', False)
             user_text = getattr(self.voice_agent, 'current_user_text', "")
             new_photo_url = getattr(self.voice_agent, 'new_photo_url', None)
+            is_conversation_active = getattr(self.voice_agent, 'is_conversation_active', False)
             if new_photo_url:
                 self.voice_agent.new_photo_url = None
 
-        voice_state = (subtitle, is_listening, is_pill_taken, user_text, is_emergency)
+        voice_state = (subtitle, is_listening, is_pill_taken, user_text, is_emergency, is_conversation_active)
         if voice_state == getattr(self, '_last_voice_state', None) and not new_photo_url:
             return
         self._last_voice_state = voice_state
@@ -181,6 +182,7 @@ class FaceDetector:
             "isListening": is_listening,
             "isPillTaken": is_pill_taken,
             "isEmergency": is_emergency,
+            "isConversationActive": is_conversation_active,
         }
 
         if new_photo_url:
@@ -193,6 +195,32 @@ class FaceDetector:
             except Exception:
                 disconnected.add(client)
         self.clients -= disconnected
+
+    async def broadcast_reminder(self, reminder_type: str, message: str):
+        """리마인더를 프론트엔드에 전송 (컨텐츠 영역 교체용)"""
+        TITLES = {
+            "morning": "좋은 아침이에요!",
+            "pill":    "약 드실 시간이에요!",
+            "lunch":   "점심 시간이에요!",
+            "activity":"스트레칭 시간이에요!",
+            "dinner":  "저녁 시간이에요!",
+            "night":   "편안한 밤 되세요",
+        }
+        payload = {
+            "type": "reminder",
+            "reminderType": reminder_type,
+            "title": TITLES.get(reminder_type, message),
+            "message": message,
+            "time": datetime.datetime.now().strftime("%H:%M"),
+        }
+        disconnected = set()
+        for client in self.clients:
+            try:
+                await client.send_json(payload)
+            except Exception:
+                disconnected.add(client)
+        self.clients -= disconnected
+        logger.info(f"[리마인더] {reminder_type} 프론트엔드 전송")
 
     def _detect_and_encode(self, raw_frame):
         """DNN 얼굴 감지 + 1280x720 UI 렌더링 + JPEG 인코딩"""
@@ -475,6 +503,17 @@ scheduler = BackgroundScheduler()
 
 def scheduled_pill_reminder():
     logger.info("스케줄러 훅: 복약 시간 도달")
+    # 프론트엔드에 리마인더 화면 표시
+    try:
+        loop = getattr(detector, '_loop', None)
+        if loop:
+            asyncio.run_coroutine_threadsafe(
+                detector.broadcast_reminder("pill", "할머니, 약 드실 시간이에요. 잊지 말고 꼭 챙겨 드세요!"),
+                loop
+            )
+    except Exception as e:
+        logger.warning(f"[리마인더] 브로드캐스트 실패: {e}")
+
     with detector._voice_lock:
         if detector.voice_agent is None:
             detector.voice_agent = VoiceAgent()
@@ -509,6 +548,17 @@ def scheduled_routine(routine_type: str, message: str):
     if routine_type == "pill":
         return  # 기존 복약 스케줄러 사용
     logger.info(f"[루틴] {routine_type}: {message}")
+    # 프론트엔드에 리마인더 화면 표시
+    try:
+        loop = getattr(detector, '_loop', None)
+        if loop:
+            asyncio.run_coroutine_threadsafe(
+                detector.broadcast_reminder(routine_type, message),
+                loop
+            )
+    except Exception as e:
+        logger.warning(f"[리마인더] 브로드캐스트 실패: {e}")
+
     with detector._voice_lock:
         if detector.voice_agent is None:
             detector.voice_agent = VoiceAgent()
@@ -519,6 +569,8 @@ def scheduled_routine(routine_type: str, message: str):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    detector._loop = asyncio.get_event_loop()  # 스케줄러 스레드에서 코루틴 실행용
+
     # 복약 알림 스케줄러
     hr, mn = map(int, config.PILL_TIME.split(":"))
     scheduler.add_job(scheduled_pill_reminder, 'cron', hour=hr, minute=mn)
@@ -732,6 +784,7 @@ async def unregister_push_token(payload: dict):
 
 _weather_cache = {"data": None, "fetched_at": 0}
 WEATHER_CACHE_TTL = 1800  # 30분 캐시
+
 
 @app.get("/api/weather")
 async def get_weather():

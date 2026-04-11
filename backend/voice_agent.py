@@ -538,8 +538,10 @@ class VoiceAgent:
     def trigger_pill_reminder(self):
         """스케줄러에 의해 호출되어 복약 독촉 멘트를 발생시킵니다."""
         print("[VoiceAgent] 스케줄러: 복약 알람 발화")
+        self.is_conversation_active = True
         reminder_text = "할머니, 약 드실 시간이에요. 잊지 말고 꼭 챙겨 드세요!"
         self.play_sound("pill_remind.mp3", fallback_text=reminder_text)
+        self.is_conversation_active = False
 
 # 단독 실행 테스트용
 if __name__ == "__main__":
