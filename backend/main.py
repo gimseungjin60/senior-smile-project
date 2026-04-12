@@ -717,6 +717,9 @@ async def pairing_status():
     return detector.pairing.get_status()
 
 
+PAIRING_CODE_EXPIRY = 300
+
+
 @app.post("/api/pairing/code")
 async def generate_pairing_code():
     """새 페어링 코드를 생성합니다 (5분 유효)."""
@@ -726,9 +729,6 @@ async def generate_pairing_code():
         "expires_in": PAIRING_CODE_EXPIRY,
         "device_id": detector.pairing.device_id,
     }
-
-
-PAIRING_CODE_EXPIRY = 300
 
 
 @app.post("/api/pairing/verify")
@@ -758,7 +758,7 @@ async def verify_pairing(payload: dict):
             "pairing": detector.pairing.get_status(),
         }
         disconnected = set()
-        for client in detector.clients:
+        for client in list(detector.clients):
             try:
                 await client.send_json(pairing_msg)
             except Exception:
@@ -1127,21 +1127,47 @@ def _parse_mood_score(emotion_report: str) -> int:
 
 def _get_sessions_for_date(db, device_id: str, date_str: str) -> list:
     """특정 날짜의 세션 목록을 반환합니다."""
+    # created_at이 문자열 또는 Firestore Timestamp일 수 있으므로 둘 다 처리
     start = f"{date_str}T00:00:00"
     end = f"{date_str}T23:59:59"
-    docs = (
-        db.collection("sessions")
-        .where("device_id", "==", device_id)
-        .where("created_at", ">=", start)
-        .where("created_at", "<=", end)
-        .stream()
-    )
-    sessions = []
-    for doc in docs:
-        data = doc.to_dict()
-        data["id"] = doc.id
-        sessions.append(data)
-    return sessions
+    try:
+        docs = (
+            db.collection("sessions")
+            .where("device_id", "==", device_id)
+            .where("created_at", ">=", start)
+            .where("created_at", "<=", end)
+            .stream()
+        )
+        sessions = []
+        for doc in docs:
+            data = doc.to_dict()
+            data["id"] = doc.id
+            # Firestore Timestamp → ISO 문자열 변환
+            ca = data.get("created_at")
+            if hasattr(ca, "isoformat"):
+                data["created_at"] = ca.isoformat()
+            sessions.append(data)
+        return sessions
+    except Exception:
+        # Timestamp 타입 불일치 시 전체 조회 후 필터링
+        docs = (
+            db.collection("sessions")
+            .where("device_id", "==", device_id)
+            .stream()
+        )
+        sessions = []
+        for doc in docs:
+            data = doc.to_dict()
+            data["id"] = doc.id
+            ca = data.get("created_at")
+            if hasattr(ca, "isoformat"):
+                ca_str = ca.isoformat()
+                data["created_at"] = ca_str
+            else:
+                ca_str = str(ca) if ca else ""
+            if ca_str.startswith(date_str):
+                sessions.append(data)
+        return sessions
 
 
 @app.get("/api/reports/summary")
@@ -1243,7 +1269,10 @@ async def get_daily_report(device_id: str = "", date: str = ""):
 
         result["session_count"] = len(sessions)
         result["mood_score"] = round(sum(scores) / len(scores)) if scores else 0
-        result["total_smiles"] = sum(1 for s in scores if s >= 70)
+        result["total_smiles"] = sum(
+            1 for s in sessions
+            if _parse_mood_score(s.get("emotion_report", "")) >= 70
+        )
         result["hourly_detection"] = hourly
 
     except Exception as e:
