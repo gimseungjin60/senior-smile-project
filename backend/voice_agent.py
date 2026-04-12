@@ -366,32 +366,55 @@ class VoiceAgent:
 
         print("[VoiceAgent] 대화 모드 종료")
 
+    def _transcribe_audio(self, audio) -> str:
+        """녹음된 오디오를 OpenAI Whisper API로 변환합니다."""
+        import tempfile
+        tmp_path = None
+        try:
+            wav_data = audio.get_wav_data()
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                tmp.write(wav_data)
+                tmp_path = tmp.name
+
+            with open(tmp_path, "rb") as audio_file:
+                transcript = self.openai_client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                    language="ko"
+                )
+            return transcript.text.strip()
+        except Exception as e:
+            print(f"[VoiceAgent] OpenAI Whisper STT 에러: {e}")
+            return ""
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
     def listen(self, source) -> str:
         self.is_listening = True
         self.current_user_text = ""
         print("[VoiceAgent] 마이크를 열었습니다. 듣는 중... 🎤")
-        # while루프는 main에서만 돌고, listen 내에서는 한 턴만 처리합니다.
-        # timeout을 1초로 주어 is_running 플래그 전환을 허용하며 스레드 병목을 회피합니다.
         while self.is_running:
             try:
                 audio = self.recognizer.listen(source, timeout=1.0, phrase_time_limit=10.0)
-                print("[VoiceAgent] 소리 포착됨, 구글 인식 중... ☁️")
-                text = self.recognizer.recognize_google(audio, language="ko-KR")
+                print("[VoiceAgent] 소리 포착됨, OpenAI Whisper 인식 중... ☁️")
+                text = self._transcribe_audio(audio)
                 self.is_listening = False
-                self.current_user_text = text
-                return text
+                if text:
+                    self.current_user_text = text
+                    return text
+                else:
+                    return ""
             except sr.WaitTimeoutError:
-                # 1초 동안 말을 안 한 것임: 정상적인 루프백
                 continue
-            except sr.UnknownValueError:
-                print("[VoiceAgent] 인식 실패 (마이크에 소리는 났으나 발음 불분명)")
-                self.is_listening = False
-                return ""
             except Exception as e:
-                print(f"[VoiceAgent] 음성 인식 중 예측 불가 에러 발생: {e}")
+                print(f"[VoiceAgent] 음성 인식 중 에러 발생: {e}")
                 self.is_listening = False
                 return ""
-        
+
         self.is_listening = False
         return ""
 
@@ -491,11 +514,8 @@ class VoiceAgent:
             audio = self.recognizer.listen(source, timeout=3, phrase_time_limit=15)
             self.is_listening = False
 
-            # STT로 텍스트도 추출
-            try:
-                text = self.recognizer.recognize_google(audio, language="ko-KR")
-            except Exception:
-                text = ""
+            # STT로 텍스트도 추출 (OpenAI Whisper)
+            text = self._transcribe_audio(audio)
 
             # WAV로 저장
             msg_id = f"reply_{uuid.uuid4().hex[:8]}"

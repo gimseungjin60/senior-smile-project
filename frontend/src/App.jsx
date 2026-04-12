@@ -68,6 +68,11 @@ function App() {
           return
         }
 
+        if (data.type === 'pairing') {
+          if (data.pairing) setPairing(data.pairing)
+          return
+        }
+
         if (data.type === 'voice') {
           setSubtitle(data.subtitle || '')
           setUserText(data.userText || '')

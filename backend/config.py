@@ -28,7 +28,7 @@ DEVICE_ID = _get_or_create_device_id()
 # ==========================================
 CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX", 0))
 FRAME_INTERVAL = 0.1          # ~10 FPS
-CORS_ORIGINS = ["http://localhost:5173"]
+CORS_ORIGINS = ["*"]
 
 # ==========================================
 # 비전 (DNN 감지) 설정

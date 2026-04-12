@@ -12,7 +12,31 @@
       "Bash(ls backend/voice_agent.py backend/config.py backend/sounds/ backend/photos/ frontend/src/components/SubtitleBar.* frontend/src/components/UserSpeechBubble.*)",
       "Bash(npm ls:*)",
       "Bash(npm uninstall:*)",
-      "Bash(python3 -m py_compile main.py config.py voice_agent.py)"
+      "Bash(python3 -m py_compile main.py config.py voice_agent.py)",
+      "Bash(npx vite:*)",
+      "Bash(xargs wc:*)",
+      "Bash(xargs cat:*)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('main.py'\\).read\\(\\)\\); print\\('main.py OK'\\); ast.parse\\(open\\('voice_agent.py'\\).read\\(\\)\\); print\\('voice_agent.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('main.py', encoding='utf-8'\\).read\\(\\)\\); print\\('main.py OK'\\); ast.parse\\(open\\('voice_agent.py', encoding='utf-8'\\).read\\(\\)\\); print\\('voice_agent.py OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('main.py', encoding='utf-8'\\).read\\(\\)\\); print\\('main.py OK'\\); ast.parse\\(open\\('voice_agent.py', encoding='utf-8'\\).read\\(\\)\\); print\\('voice_agent.py OK'\\); ast.parse\\(open\\('notification.py', encoding='utf-8'\\).read\\(\\)\\); print\\('notification.py OK'\\)\")",
+      "Bash(python -c \"import ast; [ast.parse\\(open\\(f, encoding='utf-8'\\).read\\(\\)\\) or print\\(f'{f} OK'\\) for f in ['main.py','voice_agent.py','notification.py','pairing.py','config.py']]\")",
+      "Bash(python -c ':*)",
+      "Bash(python -c \"import fastapi; print\\('FastAPI OK'\\)\")",
+      "Bash(python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload)",
+      "Bash(npm run:*)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:8000/docs)",
+      "Bash(ipconfig)",
+      "Bash(npx create-expo-app@latest guardian-app --template blank)",
+      "Bash(xargs grep:*)",
+      "Bash(wc -l /d/senior-smile-project/frontend/src/**/*.css)",
+      "Bash(xargs ls:*)",
+      "Bash(curl:*)",
+      "Bash(python -m py_compile *.py)",
+      "Bash(taskkill //F //IM \"python.exe\")",
+      "Bash(taskkill //F //IM \"node.exe\")",
+      "Bash(cmd:*)",
+      "Read(//d/ai-bum-app/src/screens/**)",
+      "Read(//d/ai-bum-app/src/**)"
     ]
   }
 }

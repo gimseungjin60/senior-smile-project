@@ -744,9 +744,27 @@ async def verify_pairing(payload: dict):
 
     result = detector.pairing.verify_and_pair(code, user_id, user_name, fcm_token)
 
-    # 매칭 성공 시 FCM 토큰 자동 등록
-    if result.get("success") and fcm_token:
-        detector.notifier.register_token(fcm_token)
+    # 매칭 성공 시 FCM 토큰 자동 등록 + WebSocket으로 시니어 앱에 알림
+    if result.get("success"):
+        if fcm_token:
+            detector.notifier.register_token(fcm_token)
+
+        # 시니어 앱(프론트엔드)에 페어링 완료 알림 전송
+        pairing_msg = {
+            "type": "pairing",
+            "paired": True,
+            "family_id": result.get("family_id"),
+            "user_name": user_name,
+            "pairing": detector.pairing.get_status(),
+        }
+        disconnected = set()
+        for client in detector.clients:
+            try:
+                await client.send_json(pairing_msg)
+            except Exception:
+                disconnected.add(client)
+        detector.clients -= disconnected
+        logger.info(f"[Pairing] WebSocket으로 페어링 완료 알림 전송 ({len(detector.clients)}개 클라이언트)")
 
     return result
 
@@ -876,6 +894,102 @@ async def get_routines():
     return {"routines": config.DAILY_ROUTINES, "pill_time": config.PILL_TIME}
 
 
+# === 복약 관리 API ===
+
+_medications_file = Path(__file__).parent / "medications.json"
+
+
+def _load_medications() -> list:
+    import json
+    if _medications_file.exists():
+        return json.loads(_medications_file.read_text(encoding="utf-8"))
+    return []
+
+
+def _save_medications(meds: list):
+    import json
+    _medications_file.write_text(json.dumps(meds, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+@app.get("/api/medications")
+async def list_medications():
+    """복약 목록을 반환합니다."""
+    return {"medications": _load_medications()}
+
+
+@app.post("/api/medications")
+async def add_medication(data: dict):
+    """복약 항목을 추가합니다."""
+    import uuid as _uuid
+    meds = _load_medications()
+    med = {
+        "id": f"med_{_uuid.uuid4().hex[:8]}",
+        "name": data.get("name", ""),
+        "time": data.get("time", "09:00"),
+        "dosage": data.get("dosage", ""),
+        "notes": data.get("notes", ""),
+        "enabled": True,
+        "created_at": datetime.datetime.now().isoformat(),
+    }
+    meds.append(med)
+    _save_medications(meds)
+    return {"success": True, "medication": med}
+
+
+@app.put("/api/medications/{med_id}")
+async def update_medication(med_id: str, data: dict):
+    """복약 항목을 수정합니다."""
+    meds = _load_medications()
+    for med in meds:
+        if med["id"] == med_id:
+            if "name" in data: med["name"] = data["name"]
+            if "time" in data: med["time"] = data["time"]
+            if "dosage" in data: med["dosage"] = data["dosage"]
+            if "notes" in data: med["notes"] = data["notes"]
+            if "enabled" in data: med["enabled"] = data["enabled"]
+            _save_medications(meds)
+            return {"success": True, "medication": med}
+    return {"success": False, "message": "약을 찾을 수 없습니다."}
+
+
+@app.delete("/api/medications/{med_id}")
+async def delete_medication(med_id: str):
+    """복약 항목을 삭제합니다."""
+    meds = _load_medications()
+    meds = [m for m in meds if m["id"] != med_id]
+    _save_medications(meds)
+    return {"success": True}
+
+
+@app.get("/api/medications/history")
+async def medication_history(limit: int = 30):
+    """복약 이력을 반환합니다 (세션 기반)."""
+    try:
+        import firebase_admin as fa
+        if not fa._apps:
+            return {"history": []}
+        from firebase_admin import firestore as fs
+        db = fs.client()
+        docs = (
+            db.collection("sessions")
+            .where("device_id", "==", config.DEVICE_ID)
+            .where("pill_taken", "==", True)
+            .order_by("created_at", direction=fs.Query.DESCENDING)
+            .limit(limit)
+            .stream()
+        )
+        history = []
+        for doc in docs:
+            d = doc.to_dict()
+            history.append({
+                "date": d.get("created_at", ""),
+                "pill_taken": True,
+            })
+        return {"history": history}
+    except Exception as e:
+        return {"history": [], "error": str(e)}
+
+
 # === 음성 메시지 API ===
 
 @app.post("/api/voice-messages/send")
@@ -936,6 +1050,265 @@ async def get_voice_audio(msg_id: str):
         if filepath.exists():
             return FileResponse(filepath)
     return {"error": "파일을 찾을 수 없습니다."}
+
+
+# === 사진 API ===
+
+PHOTOS_DIR = Path(__file__).parent / "photos"
+PHOTOS_DIR.mkdir(exist_ok=True)
+
+
+@app.get("/api/photos")
+async def list_photos(limit: int = 50):
+    """사진 목록을 반환합니다."""
+    files = sorted(PHOTOS_DIR.glob("*.jpg"), key=lambda f: f.stat().st_mtime, reverse=True)
+    files += sorted(PHOTOS_DIR.glob("*.png"), key=lambda f: f.stat().st_mtime, reverse=True)
+    photos = []
+    for f in files[:limit]:
+        photos.append({
+            "id": f.stem,
+            "filename": f.name,
+            "created_at": datetime.datetime.fromtimestamp(f.stat().st_mtime).isoformat(),
+        })
+    return {"photos": photos}
+
+
+@app.post("/api/photos/upload")
+async def upload_photo(file: UploadFile = File(...)):
+    """보호자가 어르신 액자에 사진을 업로드합니다."""
+    import uuid as _uuid
+    ext = Path(file.filename).suffix.lower() if file.filename else ".jpg"
+    if ext not in (".jpg", ".jpeg", ".png"):
+        ext = ".jpg"
+    photo_id = f"photo_{_uuid.uuid4().hex[:8]}"
+    filename = f"{photo_id}{ext}"
+    filepath = PHOTOS_DIR / filename
+
+    content = await file.read()
+    filepath.write_bytes(content)
+
+    # 사진 목록 다시 로드
+    detector._load_photos()
+
+    # WebSocket으로 새 사진 알림
+    new_photo_url = f"/api/photos/{filename}"
+    payload = {"type": "new_photo", "newPhotoUrl": new_photo_url}
+    disconnected = set()
+    for client in detector.clients:
+        try:
+            await client.send_json(payload)
+        except Exception:
+            disconnected.add(client)
+    detector.clients -= disconnected
+
+    logger.info(f"[Photo] 사진 업로드 완료: {filename}")
+    return {"success": True, "filename": filename, "url": new_photo_url}
+
+
+@app.get("/api/photos/{filename}")
+async def get_photo(filename: str):
+    """개별 사진 파일을 반환합니다."""
+    filepath = PHOTOS_DIR / filename
+    if filepath.exists():
+        return FileResponse(filepath)
+    return {"error": "사진을 찾을 수 없습니다."}
+
+
+# === 보호자 리포트 API ===
+
+def _parse_mood_score(emotion_report: str) -> int:
+    """감정 리포트 문자열에서 기분 점수를 추출합니다."""
+    import re
+    match = re.search(r'\[기분\s*점수[:\s]*(\d+)', emotion_report or "")
+    if match:
+        return int(match.group(1))
+    return 0
+
+
+def _get_sessions_for_date(db, device_id: str, date_str: str) -> list:
+    """특정 날짜의 세션 목록을 반환합니다."""
+    start = f"{date_str}T00:00:00"
+    end = f"{date_str}T23:59:59"
+    docs = (
+        db.collection("sessions")
+        .where("device_id", "==", device_id)
+        .where("created_at", ">=", start)
+        .where("created_at", "<=", end)
+        .stream()
+    )
+    sessions = []
+    for doc in docs:
+        data = doc.to_dict()
+        data["id"] = doc.id
+        sessions.append(data)
+    return sessions
+
+
+@app.get("/api/reports/summary")
+async def get_report_summary(device_id: str = ""):
+    """홈 화면용 요약 데이터를 반환합니다."""
+    did = device_id or config.DEVICE_ID
+    today = datetime.date.today().isoformat()
+
+    result = {
+        "device": {"device_id": did, "last_detection": None},
+        "today": {
+            "mood_score": 0,
+            "total_detection_seconds": 0,
+            "total_smiles": 0,
+            "session_count": 0,
+        },
+        "weekly_chart": [],
+    }
+
+    try:
+        import firebase_admin as fa
+        if not fa._apps:
+            return result
+        from firebase_admin import firestore as fs
+        db = fs.client()
+
+        # 디바이스 정보
+        dev_doc = db.collection("devices").document(did).get()
+        if dev_doc.exists:
+            dev_data = dev_doc.to_dict()
+            last_det = dev_data.get("last_detection")
+            if last_det:
+                result["device"]["last_detection"] = (
+                    last_det.isoformat() if hasattr(last_det, "isoformat") else str(last_det)
+                )
+
+        # 오늘 세션
+        today_sessions = _get_sessions_for_date(db, did, today)
+        scores = []
+        for s in today_sessions:
+            score = _parse_mood_score(s.get("emotion_report", ""))
+            if score > 0:
+                scores.append(score)
+        result["today"]["session_count"] = len(today_sessions)
+        result["today"]["mood_score"] = round(sum(scores) / len(scores)) if scores else 0
+        result["today"]["total_smiles"] = sum(1 for s in today_sessions if _parse_mood_score(s.get("emotion_report", "")) >= 70)
+
+        # 주간 차트 (7일)
+        weekly = []
+        for i in range(6, -1, -1):
+            d = (datetime.date.today() - datetime.timedelta(days=i)).isoformat()
+            day_sessions = _get_sessions_for_date(db, did, d) if i > 0 else today_sessions
+            weekly.append(len(day_sessions))
+        result["weekly_chart"] = weekly
+
+    except Exception as e:
+        logger.warning(f"[Reports] summary 오류: {e}")
+
+    return result
+
+
+@app.get("/api/reports/daily")
+async def get_daily_report(device_id: str = "", date: str = ""):
+    """일간 상세 리포트를 반환합니다."""
+    did = device_id or config.DEVICE_ID
+    target_date = date or datetime.date.today().isoformat()
+
+    result = {
+        "date": target_date,
+        "mood_score": 0,
+        "total_detection_seconds": 0,
+        "total_smiles": 0,
+        "session_count": 0,
+        "hourly_detection": {},
+    }
+
+    try:
+        import firebase_admin as fa
+        if not fa._apps:
+            return result
+        from firebase_admin import firestore as fs
+        db = fs.client()
+
+        sessions = _get_sessions_for_date(db, did, target_date)
+        scores = []
+        hourly = {}
+
+        for s in sessions:
+            score = _parse_mood_score(s.get("emotion_report", ""))
+            if score > 0:
+                scores.append(score)
+            created = s.get("created_at", "")
+            if created:
+                try:
+                    hour = str(datetime.datetime.fromisoformat(created).hour)
+                    hourly[hour] = hourly.get(hour, 0) + 1
+                except (ValueError, TypeError):
+                    pass
+
+        result["session_count"] = len(sessions)
+        result["mood_score"] = round(sum(scores) / len(scores)) if scores else 0
+        result["total_smiles"] = sum(1 for s in scores if s >= 70)
+        result["hourly_detection"] = hourly
+
+    except Exception as e:
+        logger.warning(f"[Reports] daily 오류: {e}")
+
+    return result
+
+
+@app.get("/api/reports/weekly")
+async def get_weekly_report(device_id: str = ""):
+    """주간 요약 리포트를 반환합니다."""
+    did = device_id or config.DEVICE_ID
+
+    result = {
+        "avg_mood_score": 0,
+        "avg_detection_seconds": 0,
+        "avg_smiles": 0,
+        "mood_trend": "stable",
+        "daily_breakdown": [],
+    }
+
+    try:
+        import firebase_admin as fa
+        if not fa._apps:
+            return result
+        from firebase_admin import firestore as fs
+        db = fs.client()
+
+        all_scores = []
+        breakdown = []
+
+        for i in range(6, -1, -1):
+            d = (datetime.date.today() - datetime.timedelta(days=i)).isoformat()
+            sessions = _get_sessions_for_date(db, did, d)
+            day_scores = [_parse_mood_score(s.get("emotion_report", "")) for s in sessions]
+            day_scores = [s for s in day_scores if s > 0]
+            avg = round(sum(day_scores) / len(day_scores)) if day_scores else 0
+            all_scores.extend(day_scores)
+            breakdown.append({
+                "date": d,
+                "session_count": len(sessions),
+                "mood_score": avg,
+                "total_smiles": sum(1 for s in day_scores if s >= 70),
+                "total_detection_seconds": len(sessions) * 300,  # 세션당 평균 5분 추정
+            })
+
+        result["daily_breakdown"] = breakdown
+        result["avg_mood_score"] = round(sum(all_scores) / len(all_scores)) if all_scores else 0
+        result["avg_smiles"] = round(sum(b["total_smiles"] for b in breakdown) / 7, 1)
+
+        # 추세 계산 (전반 3일 vs 후반 4일)
+        first_half = [s for b in breakdown[:3] for s in [b["mood_score"]] if s > 0]
+        second_half = [s for b in breakdown[3:] for s in [b["mood_score"]] if s > 0]
+        if first_half and second_half:
+            avg_first = sum(first_half) / len(first_half)
+            avg_second = sum(second_half) / len(second_half)
+            if avg_second > avg_first + 5:
+                result["mood_trend"] = "improving"
+            elif avg_second < avg_first - 5:
+                result["mood_trend"] = "declining"
+
+    except Exception as e:
+        logger.warning(f"[Reports] weekly 오류: {e}")
+
+    return result
 
 
 # === 보호자 대시보드 API ===

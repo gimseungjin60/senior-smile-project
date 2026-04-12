@@ -79,24 +79,33 @@ function IdleScreen({ pairing }) {
     }
   }, [])
 
-  // 코드 카운트다운
+  // 코드 카운트다운 — codeRemaining을 dependency에서 제거하여 1회만 setInterval 생성
   useEffect(() => {
-    if (codeRemaining <= 0) {
-      setPairingCode(null)
-      return
-    }
+    if (!pairingCode) return
     const timer = setInterval(() => {
-      setCodeRemaining((s) => s - 1)
+      setCodeRemaining((s) => {
+        if (s <= 1) {
+          clearInterval(timer)
+          return 0
+        }
+        return s - 1
+      })
     }, 1000)
     return () => clearInterval(timer)
-  }, [codeRemaining])
+  }, [pairingCode])
 
   // 미페어링 + 코드 없으면 자동 생성
+  const isPairedVal = pairing?.is_paired
   useEffect(() => {
-    if (pairing && !pairing.is_paired && !pairingCode) {
+    if (isPairedVal === false && !pairingCode && codeRemaining <= 0) {
       requestCode()
     }
-  }, [pairing, pairingCode, requestCode])
+    // 페어링 완료 시 PIN 상태 즉시 초기화
+    if (isPairedVal === true) {
+      setPairingCode(null)
+      setCodeRemaining(0)
+    }
+  }, [isPairedVal]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const isPaired = pairing?.is_paired
   const showPairing = pairing && !isPaired
