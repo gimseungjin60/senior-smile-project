@@ -94,21 +94,38 @@ function IdleScreen({ pairing }) {
     return () => clearInterval(timer)
   }, [pairingCode])
 
+  // pairing이 미완료 상태일 때 REST API로 최신 상태 폴링
+  const [localPairing, setLocalPairing] = useState(null)
+  useEffect(() => {
+    if (pairing?.is_paired) { setLocalPairing(pairing); return }
+    async function fetchPairing() {
+      try {
+        const res = await fetch(`${BACKEND_API}/api/pairing/status`)
+        const data = await res.json()
+        setLocalPairing(data)
+      } catch { /* 무시 */ }
+    }
+    fetchPairing()
+    const timer = setInterval(fetchPairing, 3000)
+    return () => clearInterval(timer)
+  }, [pairing?.is_paired])
+
+  const activePairing = pairing?.is_paired ? pairing : (localPairing || pairing)
+
   // 미페어링 + 코드 없으면 자동 생성
-  const isPairedVal = pairing?.is_paired
+  const isPairedVal = activePairing?.is_paired
   useEffect(() => {
     if (isPairedVal === false && !pairingCode && codeRemaining <= 0) {
       requestCode()
     }
-    // 페어링 완료 시 PIN 상태 즉시 초기화
     if (isPairedVal === true) {
       setPairingCode(null)
       setCodeRemaining(0)
     }
   }, [isPairedVal]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const isPaired = pairing?.is_paired
-  const showPairing = pairing && !isPaired
+  const isPaired = activePairing?.is_paired
+  const showPairing = activePairing && !isPaired
 
   return (
     <div className={`idle-screen ${isNight ? 'idle-screen--night' : ''}`}>
@@ -144,7 +161,7 @@ function IdleScreen({ pairing }) {
                 코드 생성하기
               </button>
             )}
-            <p className="pairing-device-id">기기 ID: {pairing.device_id}</p>
+            <p className="pairing-device-id">기기 ID: {activePairing?.device_id}</p>
           </div>
         ) : (
           <div className="idle-weather-card">

@@ -20,7 +20,7 @@ class VoiceAgent:
         self.is_pill_taken = False
         self.is_running = False
         self.is_listening = False
-        self.chat_history = collections.deque(maxlen=5)
+        self.chat_history = []
         self.current_subtitle = ""
         self.current_user_text = ""
 
@@ -38,8 +38,13 @@ class VoiceAgent:
         self._conversation_timeout = 10  # 무응답 시 대기 모드 복귀 (초)
         self._last_interaction_time = 0
 
-        # 감정 리포트 (세션 종료 시 main.py에서 읽어감)
+        # 감정 리포트 + 대화 로그 (세션 종료 시 main.py에서 읽어감)
         self.last_emotion_report = ""
+        self.last_chat_log: list = []
+
+        # 카메라 미소 데이터 (main.py에서 주입)
+        self.session_smile_count = 0
+        self.session_total_face_frames = 0
 
         # 긴급 상황 상태
         self.is_emergency = False
@@ -98,9 +103,11 @@ class VoiceAgent:
         self.thread.start()
 
     def stop_conversation(self):
-        """대화 세션을 종료합니다."""
-        if self.chat_history:
-            chat_log = list(self.chat_history)
+        """대화 세션을 종료합니다. 세션 저장은 main.py _save_session이 담당."""
+        chat_log = list(self.chat_history)
+        self.last_chat_log = chat_log
+
+        if chat_log:
             print("[VoiceAgent] 대화 요약을 시작합니다...")
             summary_prompt = "다음 대화 내역을 보고 어르신의 기분과 상태를 1줄 요약하고, 마지막에 [기분 점수: 85/100점] 포맷으로 점수를 함께 산출해 줘:\n" + "\n".join(chat_log)
             report = ""
@@ -115,31 +122,10 @@ class VoiceAgent:
                 print(f"\n==================================\n[AI 감정 리포트]: {report}\n==================================\n")
             except Exception as e:
                 print(f"[요약 에러] {e}")
-
-            # Firestore에 세션 기록 저장
-            self._save_session_to_db(chat_log, report)
-            self.chat_history.clear()
+        else:
+            self.last_emotion_report = ""
 
         self.is_running = False
-
-    def _save_session_to_db(self, chat_log: list, emotion_report: str):
-        """대화 세션을 Firestore에 저장합니다."""
-        if not self.db:
-            return
-        try:
-            import datetime
-            self.db.collection("sessions").add({
-                "device_id": config.DEVICE_ID,
-                "messages": chat_log,
-                "emotion_report": emotion_report,
-                "pill_taken": self.is_pill_taken,
-                "is_emergency": self.is_emergency,
-                "created_at": datetime.datetime.now().isoformat(),
-                "message_count": len(chat_log),
-            })
-            print(f"[VoiceAgent] 세션 기록 저장 완료 ({len(chat_log)}건)")
-        except Exception as e:
-            print(f"[VoiceAgent] 세션 저장 실패: {e}")
 
     def _on_firebase_snapshot(self, col_snapshot, changes, read_time):
         for change in changes:

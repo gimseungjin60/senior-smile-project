@@ -22,6 +22,7 @@ function App() {
   const [newPhotoUrl, setNewPhotoUrl] = useState(null)
   const [isEmergency, setIsEmergency] = useState(false)
   const [pairing, setPairing] = useState(null)
+  const pairingRef = useRef(null)
   const [isConversationActive, setIsConversationActive] = useState(false)
   const [activeReminder, setActiveReminder] = useState(null)
   const [reminderExiting, setReminderExiting] = useState(false)
@@ -69,7 +70,9 @@ function App() {
         }
 
         if (data.type === 'pairing') {
-          if (data.pairing) setPairing(data.pairing)
+          if (data.pairing) { setPairing(data.pairing); pairingRef.current = data.pairing }
+          if (data.paired === true && data.status) setStatus(data.status)
+          if (data.paired === false) setStatus('idle')
           return
         }
 
@@ -84,12 +87,17 @@ function App() {
           return
         }
 
-        if (data.status) setStatus(data.status)
+        if (data.status) {
+          const currentPairing = data.pairing || pairingRef.current
+          const isPaired = currentPairing ? currentPairing.is_paired : false
+          if (!isPaired && data.status !== 'idle') return
+          setStatus(data.status)
+        }
         if (data.subtitle !== undefined) setSubtitle(data.subtitle || '')
         if (data.isListening !== undefined) setIsListening(data.isListening || false)
         if (data.isPillTaken !== undefined) setIsPillTaken(data.isPillTaken || false)
         if (data.isConversationActive !== undefined) setIsConversationActive(data.isConversationActive || false)
-        if (data.pairing) setPairing(data.pairing)
+        if (data.pairing) { setPairing(data.pairing); pairingRef.current = data.pairing }
       }
       ws.onclose = () => {
         setConnected(false)

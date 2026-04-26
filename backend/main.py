@@ -92,6 +92,33 @@ class FaceDetector:
 
         self._load_photos()
 
+        # 미소 감지 (OpenCV Haar cascade, 추가 의존성 없음)
+        self.smile_cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_smile.xml"
+        )
+        self._session_smile_frames = 0
+        self._session_total_frames = 0
+        self._smile_check_counter = 0
+
+        # FER+ 감정 분류 (ONNX, 8개 클래스)
+        self.emotion_labels = [
+            "neutral", "happiness", "surprise", "sadness",
+            "anger", "disgust", "fear", "contempt",
+        ]
+        emotion_model_path = config.MODELS_DIR / "emotion-ferplus-8.onnx"
+        self.emotion_net = None
+        if emotion_model_path.exists():
+            try:
+                self.emotion_net = cv2.dnn.readNetFromONNX(str(emotion_model_path))
+                print("[FaceDetector] FER+ 모델 로드 완료")
+            except Exception as e:
+                print(f"[FaceDetector] FER+ 로드 실패 (smile만 사용): {e}")
+        self._session_emotion_counts: dict = {}
+        self._emotion_check_counter = 0
+
+        # last_detection Firestore 갱신 throttle (30초 간격)
+        self._last_detection_write = 0.0
+
     def _load_photos(self):
         self.photo_files = glob.glob(str(self.photos_dir / "*.jpg")) + glob.glob(str(self.photos_dir / "*.png"))
         if self.photo_files:
@@ -142,6 +169,7 @@ class FaceDetector:
             "subtitle": subtitle,
             "isListening": is_listening,
             "isPillTaken": is_pill_taken,
+            "pairing": self.pairing.get_status(),
         }
         disconnected = set()
         for client in self.clients:
@@ -237,6 +265,8 @@ class FaceDetector:
         x_offset = (int(raw_w * scale) - target_w) // 2
         y_offset = (int(raw_h * scale) - target_h) // 2
 
+        last_face_box = None  # 미소 감지용 raw 좌표
+
         for i in range(detections.shape[2]):
             confidence = detections[0, 0, i, 2]
             if confidence > config.DNN_CONFIDENCE:
@@ -245,12 +275,42 @@ class FaceDetector:
                 if self.current_status in ("greeting", "active"):
                     box = detections[0, 0, i, 3:7] * [raw_w, raw_h, raw_w, raw_h]
                     bx1, by1, bx2, by2 = box.astype(int)
+                    last_face_box = (bx1, by1, bx2, by2)
 
                     x1 = int(bx1 * scale) - x_offset
                     y1 = int(by1 * scale) - y_offset
                     x2 = int(bx2 * scale) - x_offset
                     y2 = int(by2 * scale) - y_offset
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 200, 0), 2)
+
+        # 미소 감지 + FER+ 감정 분류: 5프레임마다 1회, raw 얼굴 ROI 사용
+        if face_found and last_face_box and self.current_status in ("greeting", "active"):
+            self._smile_check_counter = (self._smile_check_counter + 1) % 5
+            if self._smile_check_counter == 0:
+                self._session_total_frames += 1
+                bx1, by1, bx2, by2 = last_face_box
+                face_roi = raw_frame[max(0, by1):by2, max(0, bx1):bx2]
+                if face_roi.size > 0:
+                    gray_roi = cv2.cvtColor(face_roi, cv2.COLOR_BGR2GRAY)
+                    smiles = self.smile_cascade.detectMultiScale(gray_roi, 1.7, 22)
+                    if len(smiles) > 0:
+                        self._session_smile_frames += 1
+                    # FER+ 추론 (모델 로드됐을 때만)
+                    if self.emotion_net is not None:
+                        self._emotion_check_counter = (self._emotion_check_counter + 1) % 5
+                        if self._emotion_check_counter == 0:
+                            try:
+                                resized = cv2.resize(gray_roi, (64, 64))
+                                blob = resized.reshape(1, 1, 64, 64).astype("float32")
+                                self.emotion_net.setInput(blob)
+                                out = self.emotion_net.forward()[0]
+                                label = self.emotion_labels[int(out.argmax())]
+                                self._session_emotion_counts[label] = (
+                                    self._session_emotion_counts.get(label, 0) + 1
+                                )
+                                print(f"[FER+] {label} (누적: {dict(self._session_emotion_counts)})")
+                            except Exception:
+                                pass
 
         target_frame = frame.copy()
         now = time.time()
@@ -274,11 +334,6 @@ class FaceDetector:
                 target_frame = np.zeros((target_h, target_w, 3), dtype=np.uint8)
 
         if self.current_status in ("greeting", "active"):
-            if getattr(self.voice_agent, 'is_listening', False):
-                radius = int(25 + 10 * np.sin(now * 8))
-                cv2.circle(target_frame, (target_w - 60, 60), radius, (0, 0, 255), -1)
-                cv2.circle(target_frame, (target_w - 60, 60), radius + 5, (255, 255, 255), 2)
-
             if self.voice_agent and self.voice_agent.current_subtitle:
                 if self.voice_agent.current_subtitle != self.last_subtitle:
                     self.last_subtitle = self.voice_agent.current_subtitle
@@ -302,22 +357,6 @@ class FaceDetector:
                     )
             else:
                 self.last_subtitle = ""
-
-            if self.voice_agent and getattr(self.voice_agent, 'is_pill_taken', False):
-                pill_text = "[ PILL DONE ]"
-                bg_color = (0, 255, 0)
-                alpha = 0.8
-            else:
-                pill_text = "[ CHECK PILL ]"
-                bg_color = (255, 0, 0)
-                alpha = (np.sin(now * 6) + 1) / 2.0 * 0.7 + 0.1
-
-            overlay = target_frame.copy()
-            cv2.rectangle(overlay, (target_w - 360, target_h - 100), (target_w - 20, target_h - 20), bg_color[::-1], -1)
-            cv2.addWeighted(overlay, alpha, target_frame, 1.0 - alpha, 0, target_frame)
-            target_frame = self._draw_pillow_text(
-                target_frame, pill_text, (target_w - 340, target_h - 80), size=40, color=(255, 255, 255)
-            )
 
         if self.prev_state != self.current_status:
             self.state_blend_start = now
@@ -373,36 +412,126 @@ class FaceDetector:
     async def _transition(self, new_status: str):
         old_status = self.current_status
         self.current_status = new_status
-        await self.broadcast(new_status)
 
         # AI-bum 백엔드에 세션 이벤트 전송 + 푸시 알림
         if new_status == "greeting" and old_status == "idle":
             self._session_start = time.time()
+            self._session_smile_frames = 0
+            self._session_total_frames = 0
+            self._session_emotion_counts = {}
+            self._emotion_check_counter = 0
             await self._send_event("session_start")
             self.notifier.notify_session_start()
         elif new_status == "idle" and old_status == "active":
             duration = 0
-            emotion_report = ""
             if self._session_start:
                 duration = int(time.time() - self._session_start)
                 self._session_start = None
-            # 음성 에이전트의 감정 리포트 가져오기
+
+            emotion_report = ""
+            chat_log = []
             with self._voice_lock:
                 if self.voice_agent:
-                    emotion_report = getattr(self.voice_agent, 'last_emotion_report', "")
-            await self._send_event("session_end", duration_seconds=duration, smile_count=0)
+                    self.voice_agent.session_smile_count = self._session_smile_frames
+                    self.voice_agent.session_total_face_frames = self._session_total_frames
+                    self.voice_agent.stop_conversation()
+                    emotion_report = self.voice_agent.last_emotion_report
+                    chat_log = list(self.voice_agent.last_chat_log)
+                    self.voice_agent.chat_history.clear()
+
+            await self._send_event(
+                "session_end",
+                duration_seconds=duration,
+                smile_count=self._session_smile_frames,
+                smile_ratio=round(
+                    self._session_smile_frames / max(1, self._session_total_frames), 3
+                ),
+            )
             self.notifier.notify_session_end(duration, emotion_report)
 
-        # 음성 에이전트 시작/종료 (스레드 안전)
+            await self._save_session(
+                duration_seconds=duration,
+                chat_log=chat_log,
+                emotion_report=emotion_report,
+                smile_frames=self._session_smile_frames,
+                total_face_frames=self._session_total_frames,
+                emotion_counts=dict(self._session_emotion_counts),
+            )
+            self._session_smile_frames = 0
+            self._session_total_frames = 0
+            self._session_emotion_counts = {}
+
+        # 세션 저장 완료 후 브로드캐스트 (앱이 fetchSummary 시 데이터 준비 보장)
+        await self.broadcast(new_status)
+
+        # 음성 에이전트 시작 (idle 전환 시 종료는 위에서 처리됨)
         with self._voice_lock:
             if new_status == "greeting":
                 if self.voice_agent is None:
                     self.voice_agent = VoiceAgent()
                     self.voice_agent.notifier = self.notifier
                 self.voice_agent.start_conversation()
-            elif new_status == "idle":
-                if self.voice_agent is not None:
-                    self.voice_agent.stop_conversation()
+
+    async def _save_session(self, *, duration_seconds, chat_log, emotion_report,
+                            smile_frames, total_face_frames, emotion_counts):
+        """카메라 인식 세션을 Firestore에 저장합니다. 대화 여부와 무관하게 호출됩니다."""
+        db = _get_db()
+        if not db:
+            return
+        try:
+            smile_ratio = round(smile_frames / max(1, total_face_frames), 3)
+            total_em = sum(emotion_counts.values()) or 1
+            dominant = max(emotion_counts, key=emotion_counts.get) if emotion_counts else "neutral"
+            _weights = {
+                "happiness": 100, "surprise": 70, "neutral": 50,
+                "contempt": 25, "fear": 15, "disgust": 15,
+                "sadness": 20, "anger": 10,
+            }
+            mood_score_camera = round(
+                sum(_weights.get(e, 50) * c for e, c in emotion_counts.items()) / total_em
+            )
+            pill_taken = False
+            is_emergency = False
+            with self._voice_lock:
+                if self.voice_agent:
+                    pill_taken = self.voice_agent.is_pill_taken
+                    is_emergency = self.voice_agent.is_emergency
+            db.collection("sessions").add({
+                "device_id": config.DEVICE_ID,
+                "created_at": datetime.datetime.now().isoformat(),
+                "duration_seconds": duration_seconds,
+                "messages": chat_log,
+                "message_count": len(chat_log),
+                "has_conversation": len(chat_log) > 0,
+                "emotion_report": emotion_report,
+                "pill_taken": pill_taken,
+                "is_emergency": is_emergency,
+                "smile_frame_count": smile_frames,
+                "total_face_frames": total_face_frames,
+                "smile_ratio": smile_ratio,
+                "emotion_counts": emotion_counts,
+                "dominant_emotion": dominant,
+                "mood_score_camera": mood_score_camera,
+            })
+            print(f"[FaceDetector] 세션 저장 완료 (대화:{len(chat_log)}건, 시간:{duration_seconds}초, 감정:{dominant})")
+        except Exception as e:
+            print(f"[FaceDetector] 세션 저장 실패: {e}")
+
+    def _maybe_update_last_detection(self):
+        """얼굴 감지 시 Firestore last_detection 필드를 30초 간격으로 갱신합니다."""
+        now = time.time()
+        if now - self._last_detection_write < 30:
+            return
+        db = _get_db()
+        if not db:
+            return
+        self._last_detection_write = now
+        try:
+            db.collection("devices").document(config.DEVICE_ID).update({
+                "last_detection": datetime.datetime.utcnow().isoformat(),
+            })
+        except Exception:
+            pass
 
     def _open_camera(self) -> bool:
         """카메라를 열고 성공 여부를 반환합니다."""
@@ -467,10 +596,16 @@ class FaceDetector:
                 logger.info("카메라 해제")
 
     async def _update_state(self, face_found: bool, now: float):
+        if face_found:
+            self._maybe_update_last_detection()
+
         status = self.current_status
 
         if status == "idle":
             if face_found:
+                if not self.pairing.is_paired:
+                    self._detect_streak = 0
+                    return
                 self._detect_streak += 1
                 if self._detect_streak >= config.DETECTION_CONFIRM_FRAMES:
                     self._detect_streak = 0
@@ -567,6 +702,51 @@ def scheduled_routine(routine_type: str, message: str):
             detector.voice_agent.speak(message)
 
 
+def _schedule_medication(med: dict):
+    """개별 복약 항목을 APScheduler에 동적으로 등록합니다."""
+    try:
+        time_str = med.get("time", "")
+        if not time_str or not med.get("enabled", True):
+            return
+        hr, mn = map(int, time_str.split(":"))
+        med_name = med.get("name", "약")
+        med_id = med["id"]
+
+        def remind():
+            msg = f"{med_name} 드실 시간이에요!"
+            try:
+                loop = getattr(detector, '_loop', None)
+                if loop:
+                    asyncio.run_coroutine_threadsafe(
+                        detector.broadcast_reminder("pill", msg), loop
+                    )
+            except Exception as e:
+                logger.warning(f"[복약] 브로드캐스트 실패: {e}")
+            with detector._voice_lock:
+                if detector.voice_agent is None:
+                    detector.voice_agent = VoiceAgent()
+                    detector.voice_agent.notifier = detector.notifier
+                if not detector.voice_agent.is_running and detector.current_status == "idle":
+                    detector.voice_agent.trigger_pill_reminder()
+
+        scheduler.add_job(remind, 'cron', hour=hr, minute=mn,
+                          id=f"med_{med_id}", replace_existing=True)
+        logger.info(f"[복약] 스케줄 등록: {med_name} @ {time_str}")
+    except Exception as e:
+        logger.warning(f"[복약] 스케줄 등록 실패: {e}")
+
+
+def _unschedule_medication(med_id: str):
+    """개별 복약 항목을 APScheduler에서 제거합니다."""
+    try:
+        job_id = f"med_{med_id}"
+        if scheduler.get_job(job_id):
+            scheduler.remove_job(job_id)
+            logger.info(f"[복약] 스케줄 제거: {med_id}")
+    except Exception:
+        pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     detector._loop = asyncio.get_event_loop()  # 스케줄러 스레드에서 코루틴 실행용
@@ -589,6 +769,10 @@ async def lifespan(app: FastAPI):
 
     scheduler.start()
     logger.info(f"스케줄러 시작 완료 (알람: {config.PILL_TIME}, 루틴: {len(config.DAILY_ROUTINES)}개)")
+
+    # medications.json에서 동적 복약 스케줄 일괄 등록
+    for med in _load_medications():
+        _schedule_medication(med)
 
     detection_task = asyncio.create_task(detector.run_detection_loop())
     heartbeat_task = asyncio.create_task(detector._heartbeat_loop())
@@ -755,6 +939,7 @@ async def verify_pairing(payload: dict):
             "paired": True,
             "family_id": result.get("family_id"),
             "user_name": user_name,
+            "status": detector.current_status,
             "pairing": detector.pairing.get_status(),
         }
         disconnected = set()
@@ -773,6 +958,24 @@ async def verify_pairing(payload: dict):
 async def unpair_device():
     """페어링을 해제합니다."""
     detector.pairing.unpair()
+
+    if detector.current_status != "idle":
+        await detector._transition("idle")
+
+    unpair_msg = {
+        "type": "pairing",
+        "paired": False,
+        "pairing": detector.pairing.get_status(),
+    }
+    disconnected = set()
+    for client in list(detector.clients):
+        try:
+            await client.send_json(unpair_msg)
+        except Exception:
+            disconnected.add(client)
+    detector.clients -= disconnected
+    logger.info("[Pairing] 페어링 해제 완료, WS 알림 전송")
+
     return {"success": True}
 
 
@@ -933,6 +1136,7 @@ async def add_medication(data: dict):
     }
     meds.append(med)
     _save_medications(meds)
+    _schedule_medication(med)
     return {"success": True, "medication": med}
 
 
@@ -948,6 +1152,8 @@ async def update_medication(med_id: str, data: dict):
             if "notes" in data: med["notes"] = data["notes"]
             if "enabled" in data: med["enabled"] = data["enabled"]
             _save_medications(meds)
+            _unschedule_medication(med_id)
+            _schedule_medication(med)
             return {"success": True, "medication": med}
     return {"success": False, "message": "약을 찾을 수 없습니다."}
 
@@ -958,6 +1164,7 @@ async def delete_medication(med_id: str):
     meds = _load_medications()
     meds = [m for m in meds if m["id"] != med_id]
     _save_medications(meds)
+    _unschedule_medication(med_id)
     return {"success": True}
 
 
@@ -1170,6 +1377,29 @@ def _get_sessions_for_date(db, device_id: str, date_str: str) -> list:
         return sessions
 
 
+def _aggregate_emotions(sessions: list) -> dict:
+    """세션 목록의 emotion_counts를 합산합니다."""
+    counts: dict = {}
+    for s in sessions:
+        for k, v in (s.get("emotion_counts") or {}).items():
+            counts[k] = counts.get(k, 0) + v
+    return counts
+
+
+def _dominant_emotion(counts: dict) -> str:
+    return max(counts, key=counts.get) if counts else "neutral"
+
+
+def _mood_score_from_camera(sessions: list) -> int:
+    """세션들의 mood_score_camera 가중 평균 (duration 기준)."""
+    scores = []
+    for s in sessions:
+        sc = s.get("mood_score_camera", 0)
+        if sc and sc > 0:
+            scores.append(sc)
+    return round(sum(scores) / len(scores)) if scores else 0
+
+
 @app.get("/api/reports/summary")
 async def get_report_summary(device_id: str = ""):
     """홈 화면용 요약 데이터를 반환합니다."""
@@ -1180,9 +1410,15 @@ async def get_report_summary(device_id: str = ""):
         "device": {"device_id": did, "last_detection": None},
         "today": {
             "mood_score": 0,
+            "mood_score_camera": 0,
+            "mood_score_llm": 0,
             "total_detection_seconds": 0,
             "total_smiles": 0,
             "session_count": 0,
+            "visit_count": 0,
+            "conversation_count": 0,
+            "emotion_counts": {},
+            "dominant_emotion": "neutral",
         },
         "weekly_chart": [],
     }
@@ -1206,21 +1442,52 @@ async def get_report_summary(device_id: str = ""):
 
         # 오늘 세션
         today_sessions = _get_sessions_for_date(db, did, today)
-        scores = []
+        llm_scores = []
         for s in today_sessions:
             score = _parse_mood_score(s.get("emotion_report", ""))
             if score > 0:
-                scores.append(score)
+                llm_scores.append(score)
+
+        emotion_counts = _aggregate_emotions(today_sessions)
+        dominant = _dominant_emotion(emotion_counts)
+        mood_cam = _mood_score_from_camera(today_sessions)
+        mood_llm = round(sum(llm_scores) / len(llm_scores)) if llm_scores else 0
+        mood_final = mood_cam if mood_cam > 0 else mood_llm
+
         result["today"]["session_count"] = len(today_sessions)
-        result["today"]["mood_score"] = round(sum(scores) / len(scores)) if scores else 0
-        result["today"]["total_smiles"] = sum(1 for s in today_sessions if _parse_mood_score(s.get("emotion_report", "")) >= 70)
+        result["today"]["visit_count"] = len(today_sessions)
+        result["today"]["conversation_count"] = sum(
+            1 for s in today_sessions if s.get("has_conversation", False)
+        )
+        result["today"]["mood_score"] = mood_final
+        result["today"]["mood_score_camera"] = mood_cam
+        result["today"]["mood_score_llm"] = mood_llm
+        result["today"]["total_smiles"] = sum(s.get("smile_frame_count", 0) for s in today_sessions)
+        result["today"]["total_detection_seconds"] = sum(
+            s.get("duration_seconds", 0) for s in today_sessions
+        )
+        result["today"]["emotion_counts"] = emotion_counts
+        result["today"]["dominant_emotion"] = dominant
 
         # 주간 차트 (7일)
         weekly = []
         for i in range(6, -1, -1):
             d = (datetime.date.today() - datetime.timedelta(days=i)).isoformat()
             day_sessions = _get_sessions_for_date(db, did, d) if i > 0 else today_sessions
-            weekly.append(len(day_sessions))
+            day_cam_scores = [s.get("mood_score_camera", 0) for s in day_sessions if s.get("mood_score_camera", 0) > 0]
+            day_llm_scores = [_parse_mood_score(s.get("emotion_report", "")) for s in day_sessions]
+            day_llm_scores = [sc for sc in day_llm_scores if sc > 0]
+            day_mood = round(sum(day_cam_scores) / len(day_cam_scores)) if day_cam_scores else (
+                round(sum(day_llm_scores) / len(day_llm_scores)) if day_llm_scores else 0
+            )
+            day_em = _aggregate_emotions(day_sessions)
+            weekly.append({
+                "date": d,
+                "visits": len(day_sessions),
+                "conversations": sum(1 for s in day_sessions if s.get("has_conversation", False)),
+                "mood_score": day_mood,
+                "dominant_emotion": _dominant_emotion(day_em),
+            })
         result["weekly_chart"] = weekly
 
     except Exception as e:
@@ -1238,10 +1505,18 @@ async def get_daily_report(device_id: str = "", date: str = ""):
     result = {
         "date": target_date,
         "mood_score": 0,
+        "mood_score_camera": 0,
+        "mood_score_llm": 0,
         "total_detection_seconds": 0,
         "total_smiles": 0,
         "session_count": 0,
+        "visit_count": 0,
+        "conversation_count": 0,
+        "emotion_counts": {},
+        "dominant_emotion": "neutral",
         "hourly_detection": {},
+        "hourly_emotions": {},
+        "avg_smile_ratio": 0,
     }
 
     try:
@@ -1252,28 +1527,49 @@ async def get_daily_report(device_id: str = "", date: str = ""):
         db = fs.client()
 
         sessions = _get_sessions_for_date(db, did, target_date)
-        scores = []
-        hourly = {}
+        llm_scores = []
+        hourly: dict = {}
+        hourly_em: dict = {}
 
         for s in sessions:
             score = _parse_mood_score(s.get("emotion_report", ""))
             if score > 0:
-                scores.append(score)
+                llm_scores.append(score)
             created = s.get("created_at", "")
             if created:
                 try:
                     hour = str(datetime.datetime.fromisoformat(created).hour)
                     hourly[hour] = hourly.get(hour, 0) + 1
+                    dom = s.get("dominant_emotion", "neutral")
+                    if hour not in hourly_em:
+                        hourly_em[hour] = {}
+                    hourly_em[hour][dom] = hourly_em[hour].get(dom, 0) + 1
                 except (ValueError, TypeError):
                     pass
 
+        emotion_counts = _aggregate_emotions(sessions)
+        dominant = _dominant_emotion(emotion_counts)
+        mood_cam = _mood_score_from_camera(sessions)
+        mood_llm = round(sum(llm_scores) / len(llm_scores)) if llm_scores else 0
+        mood_final = mood_cam if mood_cam > 0 else mood_llm
+
         result["session_count"] = len(sessions)
-        result["mood_score"] = round(sum(scores) / len(scores)) if scores else 0
-        result["total_smiles"] = sum(
-            1 for s in sessions
-            if _parse_mood_score(s.get("emotion_report", "")) >= 70
+        result["visit_count"] = len(sessions)
+        result["conversation_count"] = sum(
+            1 for s in sessions if s.get("has_conversation", False)
         )
+        result["mood_score"] = mood_final
+        result["mood_score_camera"] = mood_cam
+        result["mood_score_llm"] = mood_llm
+        result["total_smiles"] = sum(s.get("smile_frame_count", 0) for s in sessions)
+        result["total_detection_seconds"] = sum(s.get("duration_seconds", 0) for s in sessions)
+        result["avg_smile_ratio"] = round(
+            sum(s.get("smile_ratio", 0) for s in sessions) / max(1, len(sessions)), 3
+        )
+        result["emotion_counts"] = emotion_counts
+        result["dominant_emotion"] = dominant
         result["hourly_detection"] = hourly
+        result["hourly_emotions"] = hourly_em
 
     except Exception as e:
         logger.warning(f"[Reports] daily 오류: {e}")
@@ -1301,31 +1597,51 @@ async def get_weekly_report(device_id: str = ""):
         from firebase_admin import firestore as fs
         db = fs.client()
 
-        all_scores = []
+        all_cam_scores: list = []
+        all_llm_scores: list = []
         breakdown = []
+        total_duration = 0
 
         for i in range(6, -1, -1):
             d = (datetime.date.today() - datetime.timedelta(days=i)).isoformat()
             sessions = _get_sessions_for_date(db, did, d)
-            day_scores = [_parse_mood_score(s.get("emotion_report", "")) for s in sessions]
-            day_scores = [s for s in day_scores if s > 0]
-            avg = round(sum(day_scores) / len(day_scores)) if day_scores else 0
-            all_scores.extend(day_scores)
+
+            day_cam_scores = [s.get("mood_score_camera", 0) for s in sessions if s.get("mood_score_camera", 0) > 0]
+            day_llm_scores = [_parse_mood_score(s.get("emotion_report", "")) for s in sessions]
+            day_llm_scores = [sc for sc in day_llm_scores if sc > 0]
+            day_avg_cam = round(sum(day_cam_scores) / len(day_cam_scores)) if day_cam_scores else 0
+            day_avg_llm = round(sum(day_llm_scores) / len(day_llm_scores)) if day_llm_scores else 0
+            day_avg = day_avg_cam if day_avg_cam > 0 else day_avg_llm
+            day_duration = sum(s.get("duration_seconds", 0) for s in sessions)
+            total_duration += day_duration
+
+            all_cam_scores.extend(day_cam_scores)
+            all_llm_scores.extend(day_llm_scores)
+
+            day_smiles = sum(s.get("smile_frame_count", 0) for s in sessions)
+            day_em = _aggregate_emotions(sessions)
+
             breakdown.append({
                 "date": d,
                 "session_count": len(sessions),
-                "mood_score": avg,
-                "total_smiles": sum(1 for s in day_scores if s >= 70),
-                "total_detection_seconds": len(sessions) * 300,  # 세션당 평균 5분 추정
+                "visit_count": len(sessions),
+                "conversation_count": sum(1 for s in sessions if s.get("has_conversation", False)),
+                "mood_score": day_avg,
+                "total_smiles": day_smiles,
+                "total_detection_seconds": day_duration,
+                "dominant_emotion": _dominant_emotion(day_em),
+                "emotion_counts": day_em,
             })
 
         result["daily_breakdown"] = breakdown
+        all_scores = all_cam_scores if all_cam_scores else all_llm_scores
         result["avg_mood_score"] = round(sum(all_scores) / len(all_scores)) if all_scores else 0
         result["avg_smiles"] = round(sum(b["total_smiles"] for b in breakdown) / 7, 1)
+        result["avg_detection_seconds"] = round(total_duration / 7)
 
-        # 추세 계산 (전반 3일 vs 후반 4일)
-        first_half = [s for b in breakdown[:3] for s in [b["mood_score"]] if s > 0]
-        second_half = [s for b in breakdown[3:] for s in [b["mood_score"]] if s > 0]
+        # 추세 계산 (전반 3일 vs 후반 4일) — 카메라 기반 점수 우선
+        first_half = [b["mood_score"] for b in breakdown[:3] if b["mood_score"] > 0]
+        second_half = [b["mood_score"] for b in breakdown[3:] if b["mood_score"] > 0]
         if first_half and second_half:
             avg_first = sum(first_half) / len(first_half)
             avg_second = sum(second_half) / len(second_half)
