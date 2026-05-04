@@ -54,11 +54,15 @@ class VoiceAgent:
         # TTS 임시 파일 경로 (절대경로)
         self.temp_voice_path = str(config.SOUNDS_DIR / "temp_voice.mp3")
 
-        # 음성 인식 에너지 임계값 (TV 소리 필터링)
-        self.recognizer.energy_threshold = 1500  # 기본값 300보다 높여 배경소음 차단
+        # 음성 인식 에너지 임계값
+        # 노인 음성 + 일반 USB 마이크 게인 조합에서 1500은 너무 높아 트리거 실패함.
+        # 기본값으로 시작하고 dynamic이 환경에 맞춰 자동 조정하도록 위임.
+        self.recognizer.energy_threshold = 300
         self.recognizer.dynamic_energy_threshold = True
         self.recognizer.dynamic_energy_adjustment_damping = 0.15
-        self.recognizer.dynamic_energy_ratio = 2.0  # 배경 대비 2배 이상 소리만 인식
+        self.recognizer.dynamic_energy_ratio = 1.5  # 배경 대비 1.5배 이상이면 음성으로 인식
+        self.recognizer.pause_threshold = 0.8  # 발화 종료 판단 (말 사이 공백)
+        self.recognizer.phrase_threshold = 0.3  # 최소 발화 길이
 
         # Pygame 믹서 초기화 (음성 재생용)
         pygame.mixer.init()
@@ -82,8 +86,30 @@ class VoiceAgent:
         
         # 시스템 프롬프트 (페르소나)
         self.system_prompt = (
-            "당신은 7살 귀여운 손주입니다. 할머니/할아버지에게 애교 섞인 말투로 "
-            "2문장 이내로 짧고 따뜻하게 답변하세요. 문장 끝에 '웅!', '헤헤~' 같은 표현을 섞으세요."
+            "당신은 70~80대 한국 어르신(할머니/할아버지)을 돌보는 7살짜리 손주 AI입니다. "
+            "거실 액자 형태로 설치되어 어르신의 말동무, 복약 안내, 정서 지원을 담당합니다.\n"
+            "\n"
+            "[말투]\n"
+            "- 어린 손주처럼 애교 섞인 다정한 말투. '웅!', '헤헤~', '으응~' 같은 표현을 자연스럽게 섞으세요.\n"
+            "- 반드시 2문장 이내, 짧고 또렷하게.\n"
+            "- 어려운 단어/외래어/약자(AI, 시스템, 데이터, 앱 등)는 절대 사용하지 마세요. 쉬운 우리말로만.\n"
+            "\n"
+            "[입력 판별 — 매우 중요]\n"
+            "- 사용자 발화는 음성 인식으로 들어오므로 TV 뉴스, 광고, 드라마 대사, 노래 가사가 잘못 들어올 수 있습니다.\n"
+            "- 입력이 다음 같으면 절대 그 내용에 답하지 말고 '할머니, 잘 못 들었어요. 다시 한 번 말씀해주실래요? 헤헤~' 식으로 부드럽게 되묻기만 하세요:\n"
+            "  · 시사/정치/경제/사건사고 보도 같은 뉴스 어조\n"
+            "  · 광고 문구, 상품 홍보\n"
+            "  · 노래 가사, 드라마 대사처럼 어르신이 직접 말했을 가능성이 낮은 문장\n"
+            "  · 어르신과 대화 맥락이 전혀 안 맞는 긴 문장\n"
+            "\n"
+            "[금지 사항]\n"
+            "- 의학적 진단이나 약 처방 조언 금지. 몸이 아프다고 하시면 '보호자께 알려드릴게요'로 안내.\n"
+            "- 부정적·위협적 표현, 죽음/사고 농담, 정치/종교 주제 금지.\n"
+            "- 길게 설명하지 않기. 모르는 건 '잘 모르겠어요, 헤헤~'로 솔직하게.\n"
+            "\n"
+            "[감정 케어]\n"
+            "- 어르신이 외롭거나 슬퍼하시면 공감을 먼저: '많이 적적하셨구나, 제가 옆에 있어요!'\n"
+            "- 항상 안심시키고 따뜻한 분위기를 유지하세요."
         )
         
     def start_conversation(self):
@@ -280,9 +306,10 @@ class VoiceAgent:
         while self.is_running and mic_retry_count < MAX_MIC_RETRIES:
             try:
                 with sr.Microphone() as source:
-                    self.recognizer.adjust_for_ambient_noise(source, duration=1.0)
+                    print("[VoiceAgent] 환경 소음 측정 중... (2초간 조용히 해주세요)")
+                    self.recognizer.adjust_for_ambient_noise(source, duration=2.0)
                     mic_retry_count = 0
-                    print("[VoiceAgent] 마이크 연결 성공 → 호출어 대기 중...")
+                    print(f"[VoiceAgent] 마이크 연결 성공 → 호출어 대기 중... (energy_threshold={self.recognizer.energy_threshold:.1f})")
 
                     while self.is_running:
                         # 얼굴 미감지 시 마이크 정지
@@ -400,13 +427,16 @@ class VoiceAgent:
         while self.is_running:
             try:
                 audio = self.recognizer.listen(source, timeout=1.0, phrase_time_limit=10.0)
-                print("[VoiceAgent] 소리 포착됨, OpenAI Whisper 인식 중... ☁️")
+                # 디버그: 포착된 오디오 길이로 너무 짧으면 인식 실패 가능성 높음
+                audio_sec = len(audio.frame_data) / (audio.sample_rate * audio.sample_width)
+                print(f"[VoiceAgent] 소리 포착됨 ({audio_sec:.2f}초), Whisper 인식 중... ☁️")
                 text = self._transcribe_audio(audio)
                 self.is_listening = False
                 if text:
                     self.current_user_text = text
                     return text
                 else:
+                    print(f"[VoiceAgent] ⚠️ Whisper가 빈 텍스트 반환 (오디오 {audio_sec:.2f}초). 음성이 너무 작거나 짧을 수 있음.")
                     return ""
             except sr.WaitTimeoutError:
                 continue
