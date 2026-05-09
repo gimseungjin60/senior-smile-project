@@ -217,8 +217,8 @@
   <div class="container">
     <div class="cards" id="cards"></div>
 
-    <!-- 감정 트렌드 차트 -->
-    <div class="section-title">감정 트렌드</div>
+    <!-- 반응 변화 차트 -->
+    <div class="section-title">반응 변화</div>
     <div class="chart-container">
       <canvas id="emotionChart" height="200"></canvas>
     </div>
@@ -248,7 +248,8 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 
   <script>
-    const API = window.location.origin
+    const DEVICE_API = window.location.origin
+    const AUTH_API = 'http://localhost:8001'
     let authToken = localStorage.getItem('auth_token')
     let currentUser = null
 
@@ -269,7 +270,7 @@
       errEl.className = 'auth-error'
 
       try {
-        const res = await fetch(`${API}/api/auth/login`, {
+        const res = await fetch(`${AUTH_API}/api/auth/login`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email, password: pw })
@@ -298,7 +299,7 @@
       errEl.className = 'auth-error'
 
       try {
-        const res = await fetch(`${API}/api/auth/signup`, {
+        const res = await fetch(`${AUTH_API}/api/auth/signup`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email, password: pw, name })
@@ -339,7 +340,7 @@
         return
       }
       try {
-        const res = await fetch(`${API}/api/auth/me?token=${authToken}`)
+        const res = await fetch(`${AUTH_API}/api/auth/me?token=${authToken}`)
         const data = await res.json()
         if (data.success) {
           currentUser = data.user
@@ -363,7 +364,7 @@
     async function loadData() {
       // 상태 조회
       try {
-        const healthRes = await fetch(`${API}/health`)
+        const healthRes = await fetch(`${DEVICE_API}/health`)
         const health = await healthRes.json()
         const dot = document.getElementById('statusDot')
         const text = document.getElementById('statusText')
@@ -381,7 +382,7 @@
 
       // 세션 목록
       try {
-        const res = await fetch(`${API}/api/sessions?limit=30`)
+        const res = await fetch(`${DEVICE_API}/api/sessions?limit=30`)
         const data = await res.json()
         const sessions = data.sessions || []
         renderCards(sessions)
@@ -393,14 +394,14 @@
 
       // 루틴
       try {
-        const res = await fetch(`${API}/api/routines`)
+        const res = await fetch(`${DEVICE_API}/api/routines`)
         const data = await res.json()
         renderRoutines(data.routines || [])
       } catch {}
 
       // 음성 메시지
       try {
-        const res = await fetch(`${API}/api/voice-messages`)
+        const res = await fetch(`${DEVICE_API}/api/voice-messages`)
         const data = await res.json()
         renderVoiceMessages(data.messages || [])
       } catch {}
@@ -470,17 +471,15 @@
       el.classList.toggle('open')
     }
 
-    // === 감정 트렌드 차트 ===
+    // === 반응 변화 차트 ===
     let emotionChartInstance = null
 
     function renderEmotionChart(sessions) {
-      // emotion_report에서 점수 추출 (예: "[기분 점수: 85/100점]")
+      const reactivityValue = { insufficient_data: 0, low: 1, normal: 2, high: 3 }
       const dailyScores = {}
       sessions.forEach(s => {
-        if (!s.emotion_report || !s.created_at) return
-        const match = s.emotion_report.match(/(\d+)\s*\/\s*100/)
-        if (!match) return
-        const score = parseInt(match[1])
+        if (!s.created_at) return
+        const score = reactivityValue[s.reactivity_status || 'insufficient_data'] ?? 0
         const dateKey = s.created_at.split('T')[0]
         if (!dailyScores[dateKey]) dailyScores[dateKey] = []
         dailyScores[dateKey].push(score)
@@ -489,7 +488,7 @@
       const dates = Object.keys(dailyScores).sort().slice(-14) // 최근 14일
       const avgScores = dates.map(d => {
         const scores = dailyScores[d]
-        return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length)
+        return Math.round(scores.reduce((a, b) => a + b, 0) / scores.length * 10) / 10
       })
       const labels = dates.map(d => {
         const dt = new Date(d)
@@ -504,7 +503,7 @@
         ctx.font = '14px sans-serif'
         ctx.fillStyle = '#B0B8C1'
         ctx.textAlign = 'center'
-        ctx.fillText('아직 감정 데이터가 없어요', ctx.canvas.width/2, 100)
+        ctx.fillText('아직 반응 데이터가 없어요', ctx.canvas.width/2, 100)
         return
       }
 
@@ -513,14 +512,14 @@
         data: {
           labels,
           datasets: [{
-            label: '기분 점수',
+            label: '반응성',
             data: avgScores,
             borderColor: '#0064FF',
             backgroundColor: 'rgba(0,100,255,0.08)',
             fill: true,
             tension: 0.4,
             pointRadius: 6,
-            pointBackgroundColor: avgScores.map(s => s >= 70 ? '#00C471' : s >= 40 ? '#FF8C42' : '#F04452'),
+            pointBackgroundColor: avgScores.map(s => s >= 2.5 ? '#00C471' : s >= 1.5 ? '#FF8C42' : '#F04452'),
             pointBorderWidth: 2,
             pointBorderColor: '#fff',
           }]
@@ -531,12 +530,22 @@
             legend: { display: false },
             tooltip: {
               callbacks: {
-                label: (ctx) => `기분: ${ctx.raw}/100점`
+                label: (ctx) => {
+                  const labels = ['데이터 부족', '반응 적음', '평소 수준', '반응 좋음']
+                  return `반응성: ${labels[Math.round(ctx.raw)] || '데이터 부족'}`
+                }
               }
             }
           },
           scales: {
-            y: { min: 0, max: 100, ticks: { stepSize: 20 } }
+            y: {
+              min: 0,
+              max: 3,
+              ticks: {
+                stepSize: 1,
+                callback: (value) => ['부족', '낮음', '보통', '좋음'][value] || ''
+              }
+            }
           }
         }
       })
@@ -576,7 +585,7 @@
             form.append('file', blob, 'message.webm')
             form.append('sender', '보호자')
             try {
-              await fetch(`${API}/api/voice-messages/send`, { method: 'POST', body: form })
+              await fetch(`${DEVICE_API}/api/voice-messages/send`, { method: 'POST', body: form })
               status.textContent = '전송 완료!'
               setTimeout(() => { status.textContent = ''; loadData() }, 2000)
             } catch { status.textContent = '전송 실패' }
@@ -621,7 +630,7 @@
     }
 
     function playVoice(msgId) {
-      const audio = new Audio(`${API}/api/voice-messages/${msgId}/audio`)
+      const audio = new Audio(`${DEVICE_API}/api/voice-messages/${msgId}/audio`)
       audio.play()
     }
 

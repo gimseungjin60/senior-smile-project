@@ -36,7 +36,13 @@
       "Bash(taskkill //F //IM \"node.exe\")",
       "Bash(cmd:*)",
       "Read(//d/ai-bum-app/src/screens/**)",
-      "Read(//d/ai-bum-app/src/**)"
+      "Read(//d/ai-bum-app/src/**)",
+      "Bash(git *)",
+      "Bash(backend/.venv/bin/python -c \"import ast; ast.parse\\(open\\('backend/main.py'\\).read\\(\\)\\); print\\('main.py OK'\\)\")",
+      "Bash(backend/.venv/bin/python -c \"import ast; ast.parse\\(open\\('backend/auth.py'\\).read\\(\\)\\); print\\('auth.py OK'\\)\")",
+      "Bash(backend/.venv/bin/python -c \"import ast; ast.parse\\(open\\('backend/pairing.py'\\).read\\(\\)\\); print\\('pairing.py OK'\\)\")",
+      "Read(//Users/son-yoonho/Developer/ai-bum-app/src/**)",
+      "Read(//Users/son-yoonho/Developer/ai-bum-app/**)"
     ]
   }
 }
