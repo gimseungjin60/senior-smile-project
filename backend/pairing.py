@@ -5,7 +5,7 @@
 - Firebase Firestore에 매칭 정보 저장
 """
 
-import random
+import secrets
 import time
 import logging
 import threading
@@ -30,6 +30,7 @@ class PairingManager:
         self.is_paired = False
         self.family_id: Optional[str] = None
         self._lock = threading.Lock()
+        self._attempts: dict = {}  # client_ip → (count, first_attempt_time)
 
         # Firebase DB
         self.db = None
@@ -61,7 +62,7 @@ class PairingManager:
     def generate_code(self) -> str:
         """6자리 페어링 코드를 생성합니다. 5분 후 만료."""
         with self._lock:
-            self.pairing_code = "".join([str(random.randint(0, 9)) for _ in range(PAIRING_CODE_LENGTH)])
+            self.pairing_code = "".join([str(secrets.randbelow(10)) for _ in range(PAIRING_CODE_LENGTH)])
             self.code_expires_at = time.time() + PAIRING_CODE_EXPIRY
 
         # Firebase에 코드 등록
@@ -93,11 +94,20 @@ class PairingManager:
                 return int(self.code_expires_at - time.time())
             return 0
 
-    def verify_and_pair(self, code: str, user_id: str, user_name: str, fcm_token: str = "") -> dict:
+    def verify_and_pair(self, code: str, user_id: str, user_name: str, fcm_token: str = "", client_ip: str = "?") -> dict:
         """
         보호자 앱에서 코드를 입력하면 매칭을 수행합니다.
         Returns: {"success": bool, "error": str, "family_id": str}
         """
+        # rate-limit: 1분에 5회 초과 시 차단
+        now = time.time()
+        count, first_time = self._attempts.get(client_ip, (0, now))
+        if now - first_time > 60:
+            count, first_time = 0, now
+        if count >= 5:
+            return {"success": False, "error": "시도 횟수 초과. 1분 후 재시도하세요."}
+        self._attempts[client_ip] = (count + 1, first_time)
+
         with self._lock:
             # 코드 유효성 검사
             if not self.pairing_code:

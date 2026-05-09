@@ -9,6 +9,7 @@ import time
 import json
 import logging
 import hashlib
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -20,7 +21,9 @@ import config
 logger = logging.getLogger(__name__)
 
 # JWT 설정
-_raw_secret = (config.OPENAI_API_KEY or "default-dev-key") + "senior-smile-jwt-secret-2026"
+_raw_secret = os.getenv("JWT_SHARED_SECRET")
+if not _raw_secret:
+    raise RuntimeError("JWT_SHARED_SECRET 환경변수가 설정되지 않았습니다. backend/.env에 추가하세요.")
 JWT_SECRET = hashlib.sha256(_raw_secret.encode()).hexdigest()
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = 72
@@ -74,8 +77,8 @@ def signup(db, email: str, password: str, name: str) -> dict:
     if not email or not password or not name:
         return {"success": False, "error": "이메일, 비밀번호, 이름을 모두 입력해주세요."}
 
-    if len(password) < 4:
-        return {"success": False, "error": "비밀번호는 4자 이상이어야 합니다."}
+    if len(password) < 8:
+        return {"success": False, "error": "비밀번호는 8자 이상이어야 합니다."}
 
     user_id = f"user_{hashlib.md5(email.encode()).hexdigest()[:10]}"
     hashed_pw = _hash_password(password)
