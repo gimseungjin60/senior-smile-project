@@ -23,6 +23,8 @@ class VoiceAgent:
         self.chat_history = []
         self.current_subtitle = ""
         self.current_user_text = ""
+        self.play_welcome_on_start = True
+        self.pill_check_active = False
 
         # 새 사진 표시 관련 상태 변수
         self.pending_photo_url = None
@@ -91,11 +93,12 @@ class VoiceAgent:
             "2문장 이내로 짧고 따뜻하게 답변하세요. 문장 끝에 '웅!', '헤헤~' 같은 표현을 섞으세요."
         )
         
-    def start_conversation(self):
+    def start_conversation(self, play_welcome: bool = True):
         """대화 세션을 시작합니다."""
         if self.is_running:
             return
         self.is_running = True
+        self.play_welcome_on_start = play_welcome
         self.chat_history.clear()
         
         # 비전 루프를 방해하지 않도록 별도 스레드에서 대화 진행
@@ -109,7 +112,19 @@ class VoiceAgent:
 
         if chat_log:
             print("[VoiceAgent] 대화 요약을 시작합니다...")
-            summary_prompt = "다음 대화 내역을 보고 어르신의 기분과 상태를 1줄 요약하고, 마지막에 [기분 점수: 85/100점] 포맷으로 점수를 함께 산출해 줘:\n" + "\n".join(chat_log)
+            smile_ratio = 0
+            if getattr(self, 'session_total_face_frames', 0) > 0:
+                smile_ratio = int((self.session_smile_count / self.session_total_face_frames) * 100)
+
+            summary_prompt = (
+                f"다음은 어르신과의 대화 내역과 카메라로 측정된 표정 데이터입니다.\n"
+                f"- 카메라 표정: 전체 시간 중 약 {smile_ratio}% 동안 미소/밝은 표정이 감지됨 (나머지는 평온함)\n"
+                f"- 대화 내역:\n"
+                + "\n".join(chat_log) +
+                "\n\n이 두 가지 정보를 종합하여, 보호자가 이해하기 쉽게 어르신의 현재 기분과 상태를 "
+                "한두 문장으로 따뜻하게 요약해 줘. (예: 표정 변화는 적으셨지만 손주와의 대화에서 즐거워하셨어요 등) "
+                "점수나 퍼센트 같은 기계적인 수치(예: 10% 미소 등)는 절대 쓰지 말고, 자연스러운 문장으로만 표현해 줘."
+            )
             report = ""
             try:
                 response = self.openai_client.chat.completions.create(
@@ -233,9 +248,43 @@ class VoiceAgent:
             return
 
         # 약 복용
+        is_pill_confirm = False
         if "약" in user_text and ("먹었" in user_text or "묵었" in user_text):
+            is_pill_confirm = True
+        elif getattr(self, 'pill_check_active', False):
+            print(f"[VoiceAgent] AI 복약 의도 분석 중... (사용자 발화: {user_text})")
+            prompt = (
+                f"당신은 어르신이 약을 드셨는지 확인하는 도우미입니다. "
+                f"방금 어르신께 '약 드실 시간이에요. 약 드셨어요?'라고 물었고, "
+                f"어르신이 '{user_text}'라고 대답했습니다. "
+                f"이 대답이 약을 이미 먹었거나, 지금 바로 먹겠다는 긍정적인 의미인지 판단해주세요. "
+                f"맞으면 오직 '예', 아니면 오직 '아니오'로만 대답하세요."
+            )
+            try:
+                response = self.openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=10,
+                    temperature=0.0
+                )
+                answer = response.choices[0].message.content.strip()
+                if "예" in answer:
+                    is_pill_confirm = True
+            except Exception as e:
+                print(f"[VoiceAgent] AI 복약 판단 에러: {e}")
+                is_pill_confirm = any(w in user_text for w in ["응", "어", "먹었", "알겠", "묵었", "그래", "네", "가져와"])
+
+            if not is_pill_confirm:
+                # 긍정이 아닌 대답이거나 주변 소음(환각)인 경우
+                # 계속 TTS로 잔소리하면 손주 목소리와 이질감이 들고 소음 때문에 무한 반복될 수 있으므로 조용히 무시합니다.
+                # (10분 타임아웃 처리는 main.py에서 진행됨)
+                print(f"[VoiceAgent] 복약 미확인 또는 소음으로 판단됨. 조용히 대기합니다.")
+                return
+
+        if is_pill_confirm:
             print("[VoiceAgent] 약 복용 확인됨!")
             self.is_pill_taken = True
+            self.pill_check_active = False
             response_text = "아이고 잘하셨니더! 우리 할매 최고다!"
             self.play_sound("pill_praise.mp3", fallback_text=response_text)
             advice_text = "할머니, 약 드셨으니까 속 편하시게 시원한 물 한 잔 꼭 같이 드세요!"
@@ -243,6 +292,11 @@ class VoiceAgent:
             self.chat_history.append(f"AI: {response_text} {advice_text}")
             if self.notifier:
                 self.notifier.notify_pill_taken()
+            if getattr(self, "on_pill_taken", None):
+                print("[VoiceAgent] 복약 확인 콜백 실행 (WebSocket 알림 전송 시도)")
+                self.on_pill_taken()
+            else:
+                print("[VoiceAgent] 경고: 복약 확인 콜백이 등록되어 있지 않습니다.")
         # 식사 안부
         elif "밥" in user_text or "식사" in user_text:
             response_text = "건강을 위해 식사는 꼭 챙겨 드세요."
@@ -258,7 +312,8 @@ class VoiceAgent:
     def _run_loop(self):
         """메인 루프: 호출어 대기 → 대화 모드 → 타임아웃 → 대기 복귀"""
         print("[VoiceAgent] 시작 (호출어: '앨범아')")
-        self.play_sound("greet_home.mp3", fallback_text="할머니, 저 왔어요. '앨범아' 하고 불러주세요!")
+        if self.play_welcome_on_start:
+            self.play_sound("greet_home.mp3", fallback_text="할머니, 저 왔어요. '앨범아' 하고 불러주세요!")
 
         mic_retry_count = 0
         MAX_MIC_RETRIES = 5
@@ -271,8 +326,8 @@ class VoiceAgent:
                     print("[VoiceAgent] 마이크 연결 성공 → 호출어 대기 중...")
 
                     while self.is_running:
-                        # 얼굴 미감지 시 마이크 정지
-                        if not self.face_detected:
+                        # 얼굴 미감지 시 마이크 정지 (단, 복약 확인 중일 때는 예외)
+                        if not self.face_detected and not self.pill_check_active:
                             self.is_listening = False
                             self.is_conversation_active = False
                             time.sleep(0.3)
@@ -298,7 +353,8 @@ class VoiceAgent:
 
                         # === 음성 입력 ===
                         user_text = self.listen(source)
-                        if not user_text:
+                        # 너무 짧거나 없는 텍스트 필터 (최소 3자 이상 요구)
+                        if not user_text or len(user_text.strip()) < 3:
                             continue
 
                         print(f"[사용자] {user_text}")
@@ -311,6 +367,11 @@ class VoiceAgent:
 
                         # --- 호출어 대기 모드 ---
                         if not self.is_conversation_active:
+                            # 복약 확인 중일 때는 호출어 없이 바로 처리 (패널 띄우지 않음)
+                            if getattr(self, 'pill_check_active', False):
+                                self._handle_user_input(user_text, source)
+                                continue
+
                             if self._is_wake_word(user_text):
                                 self._activate_conversation()
                                 self._play_beep()
@@ -352,6 +413,29 @@ class VoiceAgent:
 
         print("[VoiceAgent] 대화 모드 종료")
 
+    # Whisper가 배경 소음에서 환각(hallucination)하는 대표 패턴 목록
+    _WHISPER_HALLUCINATIONS = [
+        "시청해 주셔서 감사합니다",
+        "구독",
+        "좋아요",
+        "할머니 지금 약",
+        "약드시고 계십니다",
+        "MBC","KBS","SBS","EBS",
+        "뉴스","날씨입니다","입니다 감사합니다",
+        "자막 제공", "번역 제공",
+    ]
+
+    def _is_hallucination(self, text: str) -> bool:
+        """Whisper 환각 텍스트인지 판별합니다."""
+        if len(text) > 30 and not any(c in text for c in ["?", "요", "야", "어", "응", "네", "아"]):
+            # 30자 이상인데 대화체 어미가 전혀 없으면 TV 자막 환각 가능성 높음
+            return True
+        for pattern in self._WHISPER_HALLUCINATIONS:
+            if pattern in text:
+                print(f"[VoiceAgent] 환각 텍스트 감지, 무시: '{text}'")
+                return True
+        return False
+
     def _transcribe_audio(self, audio) -> str:
         """녹음된 오디오를 OpenAI Whisper API로 변환합니다."""
         import tempfile
@@ -366,9 +450,14 @@ class VoiceAgent:
                 transcript = self.openai_client.audio.transcriptions.create(
                     model="whisper-1",
                     file=audio_file,
-                    language="ko"
+                    language="ko",
+                    # 환각 억제: 실제 발화 없을 때 빈 문자열 유도
+                    prompt="실제 발화된 내용만 인식하세요. 배경 소음, TV 소리, 정적은 무시하세요."
                 )
-            return transcript.text.strip()
+            text = transcript.text.strip()
+            if self._is_hallucination(text):
+                return ""
+            return text
         except Exception as e:
             print(f"[VoiceAgent] OpenAI Whisper STT 에러: {e}")
             return ""
@@ -544,10 +633,13 @@ class VoiceAgent:
     def trigger_pill_reminder(self):
         """스케줄러에 의해 호출되어 복약 독촉 멘트를 발생시킵니다."""
         print("[VoiceAgent] 스케줄러: 복약 알람 발화")
-        self.is_conversation_active = True
-        reminder_text = "할머니, 약 드실 시간이에요. 잊지 말고 꼭 챙겨 드세요!"
+        # 호출어 패널이 뜨지 않도록 is_conversation_active는 조작하지 않습니다.
+        self.pill_check_active = True
+        self.is_pill_taken = False
+        self._last_interaction_time = time.time()
+        reminder_text = "할머니, 약 드실 시간이에요. 약 드셨어요?"
         self.play_sound("pill_remind.mp3", fallback_text=reminder_text)
-        self.is_conversation_active = False
+        # 대화 모드를 종료하지 않고 응답을 기다립니다.
 
 # 단독 실행 테스트용
 if __name__ == "__main__":
