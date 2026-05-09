@@ -12,7 +12,7 @@ import numpy as np
 
 import cv2
 import httpx
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -196,8 +196,11 @@ class FaceDetector:
                 disconnected.add(client)
         self.clients -= disconnected
 
-    async def broadcast_reminder(self, reminder_type: str, message: str):
-        """리마인더를 프론트엔드에 전송 (컨텐츠 영역 교체용)"""
+    async def broadcast_reminder(self, reminder_type: str, message: str, title: str = None):
+        """리마인더를 프론트엔드에 전송 (컨텐츠 영역 교체용)
+
+        title이 주어지면 그 값을 사용하고, 아니면 reminder_type별 기본 타이틀 사용.
+        """
         TITLES = {
             "morning": "좋은 아침이에요!",
             "pill":    "약 드실 시간이에요!",
@@ -209,7 +212,7 @@ class FaceDetector:
         payload = {
             "type": "reminder",
             "reminderType": reminder_type,
-            "title": TITLES.get(reminder_type, message),
+            "title": title or TITLES.get(reminder_type, message),
             "message": message,
             "time": datetime.datetime.now().strftime("%H:%M"),
         }
@@ -543,6 +546,111 @@ def _check_pill_missed():
     detector.notifier.notify_pill_missed()
 
 
+def _events_tick():
+    """매 분 0초에 Firestore `events` 컬렉션을 검사하여 현재 시각과 일치하는
+    오늘 일정이 있으면 갤탭 ReminderScreen에 띄운다.
+
+    실패해도 다른 스케줄에 영향 없도록 try/except로 감싼다.
+    """
+    try:
+        import firebase_admin as fa
+        if not fa._apps:
+            return
+        from firebase_admin import firestore as fs
+        db = fs.client()
+        now = datetime.datetime.now()
+        today_str = now.strftime("%Y-%m-%d")
+        current_hm = now.strftime("%H:%M")
+
+        # 오늘 날짜 일정만 조회
+        docs = db.collection("events").where("date", "==", today_str).stream()
+        type_to_reminder = {
+            "family":   ("activity", "가족 일정 알림"),
+            "medical":  ("pill",     "병원 일정 알림"),
+            "activity": ("activity", "활동 시간이에요!"),
+            "other":    ("activity", "일정 알림"),
+        }
+        for doc in docs:
+            ev = doc.to_dict()
+            if ev.get("time") != current_hm:
+                continue
+            reminder_type, default_label = type_to_reminder.get(ev.get("type", "other"), type_to_reminder["other"])
+            title = ev.get("title", default_label)
+            message = ev.get("description", "") or default_label
+            try:
+                loop = getattr(detector, '_loop', None)
+                if loop:
+                    asyncio.run_coroutine_threadsafe(
+                        detector.broadcast_reminder(reminder_type, message, title=title),
+                        loop
+                    )
+                logger.info(f"[events_tick] 일정 알림: {title} @ {current_hm}")
+            except Exception as e:
+                logger.warning(f"[events_tick] 브로드캐스트 실패: {e}")
+    except Exception as e:
+        logger.warning(f"[events_tick] 처리 실패: {e}")
+
+
+def _medication_tick():
+    """매 분 0초에 실행 — medications.json의 enabled 처방 시간이 현재와 일치하면
+    프론트엔드 ReminderScreen을 띄우고 보호자 푸시도 발송한다.
+
+    실패해도 다른 스케줄에 영향 없도록 try/except로 감싼다.
+    """
+    try:
+        now = datetime.datetime.now()
+        current_hm = now.strftime("%H:%M")
+        meds = _load_medications()
+        for m in meds:
+            if not m.get("enabled", True):
+                continue
+            if m.get("time") != current_hm:
+                continue
+
+            name = m.get("name", "약")
+            title = f"{name} 드실 시간이에요!"
+            message = (
+                f"{m.get('dosage', '')} {m.get('notes', '')}".strip()
+                or "잊지 말고 꼭 챙겨 드세요!"
+            )
+
+            # 프론트엔드(갤탭) ReminderScreen 표시
+            try:
+                loop = getattr(detector, '_loop', None)
+                if loop:
+                    asyncio.run_coroutine_threadsafe(
+                        detector.broadcast_reminder("pill", message, title=title),
+                        loop
+                    )
+            except Exception as e:
+                logger.warning(f"[medication_tick] 프론트 브로드캐스트 실패: {e}")
+
+            # 음성 발화 (대화 중이 아닐 때만)
+            try:
+                with detector._voice_lock:
+                    if detector.voice_agent is None:
+                        detector.voice_agent = VoiceAgent()
+                        detector.voice_agent.notifier = detector.notifier
+                    if not detector.voice_agent.is_running and detector.current_status == "idle":
+                        detector.voice_agent.trigger_pill_reminder()
+            except Exception as e:
+                logger.warning(f"[medication_tick] 음성 발화 실패: {e}")
+
+            # 10분 후 미복용 체크 예약
+            try:
+                check_date = now + datetime.timedelta(minutes=10)
+                scheduler.add_job(
+                    _check_pill_missed, 'date', run_date=check_date,
+                    id=f"pill_check_{m.get('id', current_hm)}", replace_existing=True,
+                )
+            except Exception as e:
+                logger.warning(f"[medication_tick] 미복용 체크 예약 실패: {e}")
+
+            logger.info(f"[medication_tick] 리마인더 발송: {name} @ {current_hm}")
+    except Exception as e:
+        logger.warning(f"[medication_tick] 처리 실패: {e}")
+
+
 def scheduled_routine(routine_type: str, message: str):
     """일일 루틴 스케줄러에 의해 호출됩니다."""
     if routine_type == "pill":
@@ -571,9 +679,15 @@ def scheduled_routine(routine_type: str, message: str):
 async def lifespan(app: FastAPI):
     detector._loop = asyncio.get_event_loop()  # 스케줄러 스레드에서 코루틴 실행용
 
-    # 복약 알림 스케줄러
+    # 복약 알림 스케줄러 (config.PILL_TIME — 레거시 단일 시간)
     hr, mn = map(int, config.PILL_TIME.split(":"))
     scheduler.add_job(scheduled_pill_reminder, 'cron', hour=hr, minute=mn)
+
+    # 보호자가 등록한 medications.json 기반 리마인더 (매 분 체크)
+    scheduler.add_job(_medication_tick, 'cron', second=0, id="medication_tick")
+
+    # 보호자가 등록한 Firestore events 기반 일정 알림 (매 분 체크)
+    scheduler.add_job(_events_tick, 'cron', second=0, id="events_tick")
 
     # 일일 루틴 스케줄러
     for routine in config.DAILY_ROUTINES:
@@ -917,6 +1031,13 @@ async def list_medications():
     return {"medications": _load_medications()}
 
 
+def _safe_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @app.post("/api/medications")
 async def add_medication(data: dict):
     """복약 항목을 추가합니다."""
@@ -928,6 +1049,7 @@ async def add_medication(data: dict):
         "time": data.get("time", "09:00"),
         "dosage": data.get("dosage", ""),
         "notes": data.get("notes", ""),
+        "stock": _safe_int(data.get("stock"), 0),
         "enabled": True,
         "created_at": datetime.datetime.now().isoformat(),
     }
@@ -947,6 +1069,7 @@ async def update_medication(med_id: str, data: dict):
             if "dosage" in data: med["dosage"] = data["dosage"]
             if "notes" in data: med["notes"] = data["notes"]
             if "enabled" in data: med["enabled"] = data["enabled"]
+            if "stock" in data: med["stock"] = _safe_int(data["stock"], 0)
             _save_medications(meds)
             return {"success": True, "medication": med}
     return {"success": False, "message": "약을 찾을 수 없습니다."}
@@ -988,6 +1111,148 @@ async def medication_history(limit: int = 30):
         return {"history": history}
     except Exception as e:
         return {"history": [], "error": str(e)}
+
+
+@app.get("/api/medications/calendar")
+async def medication_calendar(
+    from_: str = Query(None, alias="from"),
+    to: str = None,
+):
+    """기간별 복약 캘린더 데이터를 반환합니다.
+
+    쿼리 파라미터:
+    - from: YYYY-MM-DD (기본값: 오늘 - 6일)
+    - to:   YYYY-MM-DD (기본값: 오늘)
+    """
+    import datetime as _dt
+
+    today = _dt.date.today()
+    try:
+        end_date = _dt.date.fromisoformat(to) if to else today
+    except ValueError:
+        end_date = today
+    try:
+        start_date = _dt.date.fromisoformat(from_) if from_ else (end_date - _dt.timedelta(days=6))
+    except ValueError:
+        start_date = end_date - _dt.timedelta(days=6)
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+
+    meds = _load_medications()
+    prescribed = [
+        {
+            "med_id": m.get("id"),
+            "name": m.get("name", ""),
+            "time": m.get("time", ""),
+            "dosage": m.get("dosage", ""),
+            "stock": _safe_int(m.get("stock"), 0),
+        }
+        for m in meds
+        if m.get("enabled", True) and m.get("time")
+    ]
+
+    # 잔량 요약: 같은 이름의 약이 여러 시간(아침/저녁)에 처방되면 합쳐서 일일 횟수 계산
+    stock_by_name = {}
+    daily_count_by_name = {}
+    for p in prescribed:
+        name = p["name"]
+        if not name:
+            continue
+        stock_by_name[name] = p["stock"]  # 같은 이름이면 동일 stock으로 가정 (시연용 단순화)
+        daily_count_by_name[name] = daily_count_by_name.get(name, 0) + 1
+
+    stock_alerts = []
+    for name, stock in stock_by_name.items():
+        per_day = daily_count_by_name.get(name, 1) or 1
+        days_left = stock // per_day if per_day else stock
+        if stock <= 0:
+            level = "out"
+        elif days_left <= 3:
+            level = "critical"
+        elif days_left <= 7:
+            level = "warning"
+        else:
+            continue
+        stock_alerts.append({
+            "name": name,
+            "stock": stock,
+            "daily_count": per_day,
+            "days_left": days_left,
+            "level": level,
+        })
+    # 위급도 순 정렬
+    _level_order = {"out": 0, "critical": 1, "warning": 2}
+    stock_alerts.sort(key=lambda a: _level_order.get(a["level"], 9))
+
+    # Firestore에서 medication_logs 조회 (없거나 실패하면 빈 결과)
+    logs_by_date = {}
+    try:
+        import firebase_admin as fa
+        if fa._apps:
+            from firebase_admin import firestore as fs
+            db = fs.client()
+            start_iso = start_date.isoformat()
+            end_iso = (end_date + _dt.timedelta(days=1)).isoformat()
+            docs = (
+                db.collection("medication_logs")
+                .where("device_id", "==", config.DEVICE_ID)
+                .where("date", ">=", start_iso)
+                .where("date", "<", end_iso)
+                .stream()
+            )
+            for doc in docs:
+                d = doc.to_dict()
+                date_key = d.get("date", "")
+                logs_by_date.setdefault(date_key, []).append({
+                    "med_id": d.get("med_id"),
+                    "med_name": d.get("med_name"),
+                    "slot": d.get("slot"),
+                    "taken_at": d.get("taken_at"),
+                })
+    except Exception as e:
+        print(f"[medication_calendar] Firestore 조회 실패: {e}")
+
+    now = _dt.datetime.now()
+    days = []
+    cursor = start_date
+    while cursor <= end_date:
+        date_key = cursor.isoformat()
+        taken = logs_by_date.get(date_key, [])
+        taken_med_ids = {t["med_id"] for t in taken if t.get("med_id")}
+
+        # 미복용 추정: 처방 시간 + 2시간 지났는데 같은 med_id 기록 없으면 missed
+        missed = []
+        for p in prescribed:
+            try:
+                h, mm = p["time"].split(":")
+                p_dt = _dt.datetime.combine(cursor, _dt.time(int(h), int(mm)))
+            except (ValueError, AttributeError):
+                continue
+            cutoff = p_dt + _dt.timedelta(hours=2)
+            if now < cutoff:
+                continue  # 아직 복용 시간이 지나지 않음
+            if p["med_id"] not in taken_med_ids:
+                missed.append({"med_id": p["med_id"], "name": p["name"], "time": p["time"]})
+
+        days.append({
+            "date": date_key,
+            "prescribed": prescribed,
+            "taken": taken,
+            "missed": missed,
+            "summary": {
+                "prescribed_count": len(prescribed),
+                "taken_count": len(taken),
+                "missed_count": len(missed),
+            },
+        })
+        cursor += _dt.timedelta(days=1)
+
+    return {
+        "from": start_date.isoformat(),
+        "to": end_date.isoformat(),
+        "days": days,
+        "stock_alerts": stock_alerts,
+    }
 
 
 # === 음성 메시지 API ===
@@ -1125,6 +1390,89 @@ def _parse_mood_score(emotion_report: str) -> int:
     return 0
 
 
+# 한국어 감정 키워드 → 표준 키 매핑 (theme/emotions.js의 EMOTION_META 키와 동기화)
+_EMOTION_KEYWORDS = {
+    "happiness": ["행복", "기쁨", "기뻐", "즐거", "신나", "웃음", "밝", "좋아", "행복해"],
+    "sadness":   ["슬픔", "슬퍼", "우울", "외로", "쓸쓸", "눈물", "그리워"],
+    "anger":     ["화남", "분노", "짜증", "성나", "화가"],
+    "fear":      ["두려", "무서", "불안", "걱정", "초조"],
+    "surprise":  ["놀람", "놀랐", "깜짝"],
+    "disgust":   ["불쾌", "역겨", "싫"],
+    "contempt":  ["경멸", "비웃"],
+    "neutral":   ["평온", "차분", "보통", "그저그", "평범"],
+}
+
+
+def _classify_emotion(emotion_report: str) -> str:
+    """리포트 텍스트에서 감정 키를 추출합니다.
+
+    1) "[감정: KEY]" 형식이 있으면 그것 우선 (voice_agent가 명시적으로 분류한 경우)
+    2) 한국어 키워드 매칭
+    3) 둘 다 실패하면 mood_score 기반 추정
+    """
+    import re
+    text = emotion_report or ""
+
+    # 1) 명시적 태그
+    m = re.search(r'\[감정[:\s]*([a-z]+)\]', text)
+    if m:
+        key = m.group(1).strip().lower()
+        if key in _EMOTION_KEYWORDS:
+            return key
+
+    # 2) 한국어 키워드
+    for key, words in _EMOTION_KEYWORDS.items():
+        for w in words:
+            if w in text:
+                return key
+
+    # 3) 점수 기반 추정
+    score = _parse_mood_score(text)
+    if score >= 70:
+        return "happiness"
+    if score >= 40:
+        return "neutral"
+    if score > 0:
+        return "sadness"
+    return "neutral"
+
+
+def _aggregate_emotions(sessions: list) -> tuple:
+    """세션 리스트에서 (emotion_counts dict, dominant_emotion) 반환."""
+    counts = {}
+    for s in sessions:
+        key = _classify_emotion(s.get("emotion_report", ""))
+        counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return {}, "neutral"
+    dominant = max(counts.items(), key=lambda kv: kv[1])[0]
+    return counts, dominant
+
+
+def _detection_seconds_for_date(db, device_id: str, date_str: str) -> int:
+    """detection_events 컬렉션의 session_end 이벤트들의 duration_seconds 합산."""
+    try:
+        import datetime as _dt
+        start = _dt.datetime.fromisoformat(f"{date_str}T00:00:00")
+        end = _dt.datetime.fromisoformat(f"{date_str}T23:59:59")
+        docs = (
+            db.collection("detection_events")
+            .where("device_id", "==", device_id)
+            .where("type", "==", "session_end")
+            .where("timestamp", ">=", start)
+            .where("timestamp", "<=", end)
+            .stream()
+        )
+        total = 0
+        for doc in docs:
+            data = doc.to_dict()
+            total += int(data.get("duration_seconds", 0) or 0)
+        return total
+    except Exception as e:
+        logger.warning(f"[Reports] detection_seconds 집계 오류: {e}")
+        return 0
+
+
 def _get_sessions_for_date(db, device_id: str, date_str: str) -> list:
     """특정 날짜의 세션 목록을 반환합니다."""
     # created_at이 문자열 또는 Firestore Timestamp일 수 있으므로 둘 다 처리
@@ -1183,6 +1531,10 @@ async def get_report_summary(device_id: str = ""):
             "total_detection_seconds": 0,
             "total_smiles": 0,
             "session_count": 0,
+            "visit_count": 0,
+            "conversation_count": 0,
+            "emotion_counts": {},
+            "dominant_emotion": "neutral",
         },
         "weekly_chart": [],
     }
@@ -1211,16 +1563,44 @@ async def get_report_summary(device_id: str = ""):
             score = _parse_mood_score(s.get("emotion_report", ""))
             if score > 0:
                 scores.append(score)
+
+        # 대화 세션: 사용자 발화가 1개 이상 있는 세션
+        conversation_sessions = [s for s in today_sessions if int(s.get("message_count", 0) or 0) > 0]
+
+        # 감정 분포
+        emotion_counts, dominant = _aggregate_emotions(today_sessions)
+
+        # 감지 시간: detection_events의 session_end 합산 (대체로 정확). 0이면 message_count*30s 추정
+        det_sec = _detection_seconds_for_date(db, did, today)
+        if det_sec == 0 and today_sessions:
+            est = sum(int(s.get("message_count", 0) or 0) for s in today_sessions) * 30
+            det_sec = est
+
         result["today"]["session_count"] = len(today_sessions)
+        result["today"]["visit_count"] = len(today_sessions)
+        result["today"]["conversation_count"] = len(conversation_sessions)
         result["today"]["mood_score"] = round(sum(scores) / len(scores)) if scores else 0
-        result["today"]["total_smiles"] = sum(1 for s in today_sessions if _parse_mood_score(s.get("emotion_report", "")) >= 70)
+        result["today"]["total_smiles"] = sum(
+            1 for s in today_sessions if _parse_mood_score(s.get("emotion_report", "")) >= 70
+        )
+        result["today"]["total_detection_seconds"] = det_sec
+        result["today"]["emotion_counts"] = emotion_counts
+        result["today"]["dominant_emotion"] = dominant
 
         # 주간 차트 (7일)
         weekly = []
         for i in range(6, -1, -1):
             d = (datetime.date.today() - datetime.timedelta(days=i)).isoformat()
             day_sessions = _get_sessions_for_date(db, did, d) if i > 0 else today_sessions
-            weekly.append(len(day_sessions))
+            day_scores = [_parse_mood_score(s.get("emotion_report", "")) for s in day_sessions]
+            day_scores = [s for s in day_scores if s > 0]
+            _, day_dom = _aggregate_emotions(day_sessions)
+            weekly.append({
+                "date": d,
+                "visits": len(day_sessions),
+                "mood_score": round(sum(day_scores) / len(day_scores)) if day_scores else 0,
+                "dominant_emotion": day_dom,
+            })
         result["weekly_chart"] = weekly
 
     except Exception as e:

@@ -102,7 +102,13 @@ class VoiceAgent:
         if self.chat_history:
             chat_log = list(self.chat_history)
             print("[VoiceAgent] 대화 요약을 시작합니다...")
-            summary_prompt = "다음 대화 내역을 보고 어르신의 기분과 상태를 1줄 요약하고, 마지막에 [기분 점수: 85/100점] 포맷으로 점수를 함께 산출해 줘:\n" + "\n".join(chat_log)
+            summary_prompt = (
+                "다음 대화 내역을 보고 어르신의 기분과 상태를 1줄 요약해 주세요. "
+                "그리고 마지막 줄에 두 가지를 함께 적어 주세요:\n"
+                "[기분 점수: NN/100점]\n"
+                "[감정: KEY] (KEY는 happiness, neutral, surprise, sadness, anger, fear, disgust, contempt 중 하나)\n\n"
+                "대화 내역:\n" + "\n".join(chat_log)
+            )
             report = ""
             try:
                 response = self.openai_client.chat.completions.create(
@@ -140,6 +146,75 @@ class VoiceAgent:
             print(f"[VoiceAgent] 세션 기록 저장 완료 ({len(chat_log)}건)")
         except Exception as e:
             print(f"[VoiceAgent] 세션 저장 실패: {e}")
+
+    def _match_and_log_medication(self):
+        """현재 시각과 가장 가까운 처방(±2시간)에 매핑하여 medication_logs에 기록합니다.
+
+        실패해도 기존 pill_taken 흐름은 유지되므로 try/except로 감쌉니다.
+        """
+        try:
+            import json, datetime
+            from pathlib import Path
+            now = datetime.datetime.now()
+            now_min = now.hour * 60 + now.minute
+
+            meds_file = Path(__file__).parent / "medications.json"
+            meds = []
+            if meds_file.exists():
+                meds = json.loads(meds_file.read_text(encoding="utf-8"))
+
+            # ±2시간 (120분) 이내에서 가장 가까운 enabled 처방 찾기
+            best = None
+            best_gap = 121
+            for m in meds:
+                if not m.get("enabled", True):
+                    continue
+                t = m.get("time", "")
+                if not t or ":" not in t:
+                    continue
+                try:
+                    h, mm = t.split(":")
+                    p_min = int(h) * 60 + int(mm)
+                except ValueError:
+                    continue
+                gap = abs(now_min - p_min)
+                if gap <= 120 and gap < best_gap:
+                    best_gap = gap
+                    best = m
+
+            log = {
+                "device_id": config.DEVICE_ID,
+                "med_id": best["id"] if best else None,
+                "med_name": best["name"] if best else None,
+                "slot": best["time"] if best else None,
+                "taken_at": now.isoformat(),
+                "date": now.strftime("%Y-%m-%d"),
+                "source": "voice",
+            }
+            if self.db:
+                self.db.collection("medication_logs").add(log)
+                print(f"[VoiceAgent] medication_logs 기록: {log['med_name'] or '(미매칭)'} @ {log['slot'] or '-'}")
+
+            # 매칭 성공 시 stock 차감 (시연 안정성을 위해 별도 try)
+            if best is not None:
+                try:
+                    current_stock = int(best.get("stock", 0) or 0)
+                    if current_stock > 0:
+                        for m in meds:
+                            if m.get("id") == best["id"]:
+                                m["stock"] = current_stock - 1
+                                break
+                        meds_file.write_text(
+                            json.dumps(meds, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+                        print(f"[VoiceAgent] {best['name']} 잔량 차감: {current_stock} → {current_stock - 1}")
+                except Exception as e:
+                    print(f"[VoiceAgent] 잔량 차감 실패: {e}")
+            return log
+        except Exception as e:
+            print(f"[VoiceAgent] medication_logs 기록 실패: {e}")
+            return None
 
     def _on_firebase_snapshot(self, col_snapshot, changes, read_time):
         for change in changes:
@@ -250,6 +325,7 @@ class VoiceAgent:
         if "약" in user_text and ("먹었" in user_text or "묵었" in user_text):
             print("[VoiceAgent] 약 복용 확인됨!")
             self.is_pill_taken = True
+            self._match_and_log_medication()
             response_text = "아이고 잘하셨니더! 우리 할매 최고다!"
             self.play_sound("pill_praise.mp3", fallback_text=response_text)
             advice_text = "할머니, 약 드셨으니까 속 편하시게 시원한 물 한 잔 꼭 같이 드세요!"
