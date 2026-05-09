@@ -10,7 +10,6 @@ from datetime import datetime
 from pathlib import Path
 
 import firebase_admin
-from firebase_admin import messaging
 
 logger = logging.getLogger(__name__)
 
@@ -24,14 +23,33 @@ class NotificationManager:
         # 페어링 매니저 참조 (main.py에서 주입)
         self.pairing = None
 
-        # Firebase 앱이 이미 초기화되어 있는지 확인
-        self._firebase_ready = len(firebase_admin._apps) > 0
-        if not self._firebase_ready:
-            logger.warning("[Notification] Firebase 미초기화 상태. 푸시 알림 비활성화.")
-
         # 중복 알림 방지 (같은 타입의 알림을 짧은 시간 내 재전송 차단)
         self._last_sent: dict[str, float] = {}
         self._cooldown_seconds = 60  # 동일 알림 최소 간격
+
+    def _get_db(self):
+        """지연 초기화로 Firestore 클라이언트 획득"""
+        if not firebase_admin._apps:
+            try:
+                from firebase_admin import credentials
+                key_path = Path(__file__).parent / "serviceAccountKey.json"
+                if key_path.exists():
+                    cred = credentials.Certificate(str(key_path))
+                    firebase_admin.initialize_app(cred)
+                    logger.info("[Notification] Firebase 앱 지연 초기화 성공")
+                else:
+                    logger.error("[Notification] serviceAccountKey.json 파일을 찾을 수 없습니다.")
+                    return None
+            except Exception as e:
+                logger.error(f"[Notification] Firebase 지연 초기화 에러: {e}")
+                return None
+
+        try:
+            from firebase_admin import firestore
+            return firestore.client()
+        except Exception as e:
+            logger.error(f"[Notification] Firestore 클라이언트 획득 실패: {e}")
+            return None
 
     def register_token(self, token: str) -> bool:
         """보호자 디바이스 토큰을 등록합니다."""
@@ -64,10 +82,44 @@ class NotificationManager:
         self._last_sent[event_type] = now
         return True
 
+    def _save_to_db(self, title: str, body: str, event_type: str):
+        """Firestore에 알림 기록 저장 (토큰 유무와 무관하게 항상 실행)"""
+        category_map = {
+            "emergency": "emergency",
+            "pill_missed": "warning",
+            "pill_taken": "general",
+            "photo_viewed": "general",
+            "voice_reply": "general",
+            "session_start": "general",
+            "session_end": "general",
+        }
+        notif_type = category_map.get(event_type, "general")
+
+        db = self._get_db()
+        if db:
+            try:
+                from firebase_admin import firestore
+                db.collection("notifications").add({
+                    "type": notif_type,
+                    "title": title,
+                    "body": body,
+                    "event_type": event_type,
+                    "createdAt": firestore.SERVER_TIMESTAMP,
+                    "isRead": False
+                })
+                logger.info(f"[Notification] DB 저장 완료: {title}")
+            except Exception as e:
+                logger.error(f"[Notification] DB 저장 실패: {e}")
+        else:
+            logger.warning(f"[Notification] DB 인스턴스 없음, DB 저장 생략: {title}")
+
     def _send(self, title: str, body: str, event_type: str, data: dict = None):
-        """FCM 멀티캐스트 전송 (스레드 안전)"""
-        if not self._firebase_ready:
-            logger.debug(f"[Notification] Firebase 미초기화. 알림 스킵: {title}")
+        """DB 저장 후 Expo Push 알림 전송"""
+        # ✅ DB 저장은 토큰 유무와 무관하게 항상 먼저 실행
+        self._save_to_db(title, body, event_type)
+
+        if not self._can_send(event_type):
+            logger.debug(f"[Notification] 쿨다운 중. 푸시 알림 스킵: {event_type}")
             return
 
         with self._lock:
@@ -81,52 +133,48 @@ class NotificationManager:
                     tokens.append(t)
 
         if not tokens:
-            logger.debug(f"[Notification] 등록된 토큰 없음. 알림 스킵: {title}")
+            logger.debug(f"[Notification] 등록된 FCM 토큰 없음. 푸시 알림 스킵: {title}")
             return
 
-        if not self._can_send(event_type):
-            logger.debug(f"[Notification] 쿨다운 중. 알림 스킵: {event_type}")
-            return
-
-        notification = messaging.Notification(title=title, body=body)
         payload = data or {}
         payload["event_type"] = event_type
         payload["timestamp"] = datetime.now().isoformat()
 
-        message = messaging.MulticastMessage(
-            notification=notification,
-            data={k: str(v) for k, v in payload.items()},
-            tokens=tokens,
-        )
+        # Expo Push API로 전송
+        import urllib.request
+        import urllib.error
+        import json as _json
+
+        messages = []
+        for token in tokens:
+            messages.append({
+                "to": token,
+                "title": title,
+                "body": body,
+                "sound": "default",
+                "data": {k: str(v) for k, v in payload.items()},
+            })
 
         try:
-            response = messaging.send_each_for_multicast(message)
-            logger.info(
-                f"[Notification] 전송 완료: {title} "
-                f"(성공 {response.success_count}, 실패 {response.failure_count})"
+            req_data = _json.dumps(messages).encode("utf-8")
+            req = urllib.request.Request(
+                "https://exp.host/--/api/v2/push/send",
+                data=req_data,
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "Accept-Encoding": "gzip, deflate",
+                },
+                method="POST",
             )
-
-            # 실패한 토큰 자동 정리 (만료/삭제된 디바이스)
-            if response.failure_count > 0:
-                self._cleanup_failed_tokens(tokens, response.responses)
-
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = _json.loads(resp.read().decode("utf-8"))
+                success = sum(1 for r in result.get("data", []) if r.get("status") == "ok")
+                fail = len(result.get("data", [])) - success
+                logger.info(f"[Notification] 전송 완료: {title} (성공 {success}, 실패 {fail})")
         except Exception as e:
-            logger.error(f"[Notification] 전송 실패: {e}")
+            logger.error(f"[Notification] Expo Push 전송 실패: {e}")
 
-    def _cleanup_failed_tokens(self, tokens, responses):
-        """전송 실패한 토큰을 자동 제거합니다."""
-        remove_codes = {
-            "NOT_FOUND",
-            "UNREGISTERED",
-            "INVALID_ARGUMENT",
-        }
-        with self._lock:
-            for token, resp in zip(tokens, responses):
-                if resp.exception and hasattr(resp.exception, 'code'):
-                    if resp.exception.code in remove_codes:
-                        if token in self._tokens:
-                            self._tokens.remove(token)
-                            logger.info(f"[Notification] 만료 토큰 자동 제거")
 
     # === 알림 이벤트 메서드 ===
 
