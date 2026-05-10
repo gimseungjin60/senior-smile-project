@@ -152,13 +152,21 @@ class PairingManager:
                         "created_at": time.time(),
                     })
 
-                # 사용자 문서 생성
+                # 사용자 문서 생성/업데이트
+                # 다대다 지원: pairings[] 배열에 추가하여 한 보호자가 여러 시니어와
+                # 페어링 가능하도록 함. legacy device_id/family_id 필드는 보호자 앱
+                # 마이그레이션을 위해 마지막 페어링 값으로 유지 (가장 최근 활성 시니어).
                 self.db.collection("users").document(user_id).set({
                     "name": user_name,
-                    "family_id": self.family_id,
-                    "device_id": self.device_id,
+                    "family_id": self.family_id,   # legacy: 마지막 페어링
+                    "device_id": self.device_id,   # legacy: 마지막 페어링
                     "fcm_token": fcm_token,
                     "role": "보호자",
+                    "pairings": firestore.ArrayUnion([{
+                        "family_id": self.family_id,
+                        "device_id": self.device_id,
+                        "paired_at": time.time(),
+                    }]),
                 }, merge=True)
 
             except Exception as e:
