@@ -2,7 +2,15 @@ fastapi==0.115.0
 uvicorn[standard]==0.30.0
 python-multipart>=0.0.9
 opencv-python>=4.8.0
-mediapipe>=0.10.0
+# macOS arm64 환경에서 `mp.solutions` (Hands/Pose 레거시 API) 가 살아있는 마지막 안정 버전
+# 0.10.18+ 부터는 macOS arm64 wheel이 solutions 빼고 tasks 만 포함 → 인지 게임 깨짐
+# Python 3.11 권장 (3.13/3.14 에선 wheel 부족하거나 stub만 설치됨)
+mediapipe==0.10.14
+attrs>=23.0.0
+# mediapipe 0.10.14 가 protobuf<5 가정 (`SymbolDatabase.GetPrototype` 사용)
+# protobuf 5+ 에서 해당 메서드 제거 → vision_engine 런타임 크래시
+# google-cloud-firestore 는 4.25.8+ 요구 → 4.25.x 에서 양립
+protobuf>=4.25.8,<5
 httpx>=0.27.0
 Pillow>=10.0.0
 numpy>=1.24.0
