@@ -92,12 +92,13 @@ class VisionEngine:
             return
 
         # Hands: max 2손, complexity 0(가벼움), 정적 이미지 모드 끔(영상 스트리밍)
+        # 320x240 다운스케일 + 시연 환경 조명 가변성 대응 위해 confidence 낮춤
         self.hands = mp.solutions.hands.Hands(
             static_image_mode=False,
             max_num_hands=2,
             model_complexity=0,
-            min_detection_confidence=0.6,
-            min_tracking_confidence=0.5,
+            min_detection_confidence=0.3,
+            min_tracking_confidence=0.3,
         )
         # Pose: 가벼운 모델, segment 안 함
         self.pose = mp.solutions.pose.Pose(

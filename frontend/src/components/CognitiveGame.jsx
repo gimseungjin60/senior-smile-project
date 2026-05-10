@@ -28,6 +28,7 @@ export default function CognitiveGame({ onExit }) {
   const [secondsLeft, setSecondsLeft] = useState(2)
   const [wsReady, setWsReady] = useState(false)
   const [errorMsg, setErrorMsg] = useState('')
+  const [debugInfo, setDebugInfo] = useState({ rxCount: 0, lastGesture: '-', lastDetected: false })
 
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
@@ -59,16 +60,25 @@ export default function CognitiveGame({ onExit }) {
   useEffect(() => {
     const ws = new WebSocket(WS_URL)
     wsRef.current = ws
-    ws.onopen = () => setWsReady(true)
+    ws.onopen = () => {
+      setWsReady(true)
+      setErrorMsg('')  // 이전 transient error 메시지 클리어 (백엔드 늦게 켜진 경우)
+    }
     ws.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data)
-        if (data.type === 'rps' && data.detected) {
-          setUserMove(data.gesture)
-          // 마지막으로 인식된 판정을 보존(가장 최근 프레임이 결정에 가장 가까움)
-          if (data.judgement && data.judgement !== 'unknown') {
-            lastJudgement.current = data.judgement
-            setJudgement(data.judgement)
+        if (data.type === 'rps') {
+          setDebugInfo((d) => ({
+            rxCount: d.rxCount + 1,
+            lastGesture: data.gesture || '-',
+            lastDetected: !!data.detected,
+          }))
+          if (data.detected) {
+            setUserMove(data.gesture)
+            if (data.judgement && data.judgement !== 'unknown') {
+              lastJudgement.current = data.judgement
+              setJudgement(data.judgement)
+            }
           }
         }
         if (data.type === 'error') {
@@ -155,10 +165,27 @@ export default function CognitiveGame({ onExit }) {
       </div>
 
       <video ref={videoRef} autoPlay playsInline muted className="cog-video" />
+      <div className="cog-detect-label" style={{
+        position: 'absolute', bottom: 180, right: 24, width: 200,
+        background: debugInfo.lastDetected ? 'rgba(34,197,94,0.95)' : 'rgba(0,0,0,0.7)',
+        color: '#fff', padding: '8px 12px', borderRadius: 8, textAlign: 'center',
+        fontSize: 16, fontWeight: 700, zIndex: 11, border: '2px solid #FFD700',
+      }}>
+        {debugInfo.rxCount === 0
+          ? '연결 대기 중...'
+          : debugInfo.lastDetected
+            ? `인식됨: ${MOVE_EMOJI[debugInfo.lastGesture] || '?'} ${MOVE_LABEL[debugInfo.lastGesture] || debugInfo.lastGesture}`
+            : '손이 안 보여요'}
+      </div>
       <canvas ref={canvasRef} style={{ display: 'none' }} />
 
       <div className="cog-stage">
         {errorMsg && <div className="cog-error">{errorMsg}</div>}
+        {(phase === 'capture' || phase === 'showAi') && (
+          <div style={{ position: 'absolute', top: 8, right: 8, fontSize: 12, color: '#888', background: 'rgba(0,0,0,0.4)', padding: '4px 8px', borderRadius: 4, zIndex: 10 }}>
+            WS:{wsReady ? 'OK' : 'X'} · 응답:{debugInfo.rxCount} · 마지막:{debugInfo.lastDetected ? '✓' : '×'}{debugInfo.lastGesture}
+          </div>
+        )}
 
         {phase === 'intro' && (
           <div className="cog-intro">
