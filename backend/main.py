@@ -29,8 +29,8 @@ from pairing import PairingManager
 from auth import signup, login, verify_token, get_user
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# AI-bum 백엔드 연동
-AIBUM_BACKEND_URL = "http://localhost:8001"
+# AI-bum 백엔드 연동 — 시연 환경에 따라 .env에서 오버라이드 가능
+AIBUM_BACKEND_URL = os.environ.get("AIBUM_BACKEND_URL", "http://localhost:8001")
 DEVICE_ID = config.DEVICE_ID
 HEARTBEAT_INTERVAL = 60
 
@@ -798,7 +798,15 @@ async def ws_vision(websocket: WebSocket):
         await websocket.close()
         return
 
-    logger.info("[VisionWS] 연결 수립")
+    # 게임/스트레칭 진입 — voice_agent 일시 정지 (마이크/스피커 자원 충돌 방지)
+    voice = getattr(detector, 'voice_agent', None)
+    if voice and hasattr(voice, 'pause'):
+        try:
+            voice.pause()
+        except Exception as e:
+            logger.warning(f"[GAME] voice_agent pause 실패: {e}")
+
+    logger.info("[GAME] 비전 WebSocket 연결 — voice_agent 일시 정지")
     ai_move: Optional[str] = None
 
     try:
@@ -859,13 +867,21 @@ async def ws_vision(websocket: WebSocket):
                 })
 
     except WebSocketDisconnect:
-        logger.info("[VisionWS] 연결 해제")
+        logger.info("[GAME] 비전 WebSocket 해제")
     except Exception as e:
-        logger.error(f"[VisionWS] 오류: {e}")
+        logger.error(f"[GAME] WebSocket 오류: {e}")
         try:
             await websocket.close()
         except Exception:
             pass
+    finally:
+        # 게임/스트레칭 종료 — voice_agent 재개
+        if voice and hasattr(voice, 'resume'):
+            try:
+                voice.resume()
+                logger.info("[GAME] 종료 — voice_agent 재개")
+            except Exception as e:
+                logger.warning(f"[GAME] voice_agent resume 실패: {e}")
 
 
 @app.get("/status")

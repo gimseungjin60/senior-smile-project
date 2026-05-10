@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { seniorWsUrl } from '../utils/host'
 import './CognitiveGame.css'
 
-const WS_URL = 'ws://localhost:8000/ws/vision'
+const WS_URL = seniorWsUrl('/ws/vision')
 const AI_MOVES = ['rock', 'paper', 'scissors']
 const MOVE_LABEL = { rock: '바위', paper: '보', scissors: '가위' }
 const MOVE_EMOJI = { rock: '✊', paper: '✋', scissors: '✌️' }

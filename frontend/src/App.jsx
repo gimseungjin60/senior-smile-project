@@ -7,9 +7,10 @@ import SubtitleBar from './components/SubtitleBar'
 import ReminderScreen from './components/ReminderScreen'
 import CognitiveGame from './components/CognitiveGame'
 import StretchingGuide from './components/StretchingGuide'
+import { seniorWsUrl } from './utils/host'
 import './App.css'
 
-const WS_URL = 'ws://localhost:8000/ws'
+const WS_URL = seniorWsUrl('/ws')
 const TRANSITION_MS = 500
 
 function App() {
@@ -144,11 +145,19 @@ function App() {
     return <ActiveScreen newPhotoUrl={newPhotoUrl} />
   }
 
-  // 활동(게임/스트레칭)이 활성이면 모든 메인 화면을 덮음
-  if (activity === 'cognitive_game') {
+  // 응급 상황은 게임/스트레칭 중이라도 강제로 종료 — App 레벨에서 컴포넌트 언마운트
+  useEffect(() => {
+    if (isEmergency && activity) {
+      console.log('[EMERGENCY] 게임/스트레칭 강제 종료')
+      setActivity(null)
+    }
+  }, [isEmergency, activity])
+
+  // 활동(게임/스트레칭)이 활성이고 응급이 아니면 메인 화면을 덮음
+  if (activity === 'cognitive_game' && !isEmergency) {
     return <CognitiveGame onExit={() => setActivity(null)} />
   }
-  if (activity === 'stretching') {
+  if (activity === 'stretching' && !isEmergency) {
     return <StretchingGuide onExit={() => setActivity(null)} />
   }
 

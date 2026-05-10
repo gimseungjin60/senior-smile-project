@@ -1,7 +1,8 @@
 import { useState } from 'react'
+import { seniorHttpUrl } from '../utils/host'
 import './StatusIndicator.css'
 
-const VIDEO_URL = 'http://localhost:8000/video'
+const VIDEO_URL = `${seniorHttpUrl()}/video`
 
 const STATUS_CONFIG = {
   idle:       { dot: 'si-dot--idle',    label: '대기중' },

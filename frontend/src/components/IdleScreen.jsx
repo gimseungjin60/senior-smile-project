@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
+import { seniorHttpUrl } from '../utils/host'
 import './IdleScreen.css'
 
-const BACKEND_API = 'http://localhost:8000'
+const BACKEND_API = seniorHttpUrl()
 const WEATHER_POLL_INTERVAL = 600000 // 10분마다 날씨 갱신
 
 function formatTime(date) {

@@ -20,6 +20,9 @@ class VoiceAgent:
         self.is_pill_taken = False
         self.is_running = False
         self.is_listening = False
+        # 외부 모듈(예: 게임/스트레칭 WebSocket)이 마이크/스피커 자원을 점유할 때
+        # voice_agent를 일시 정지시키기 위한 플래그. False면 listen() 루프가 즉시 빠져나감.
+        self.is_active = True
         self.chat_history = collections.deque(maxlen=5)
         self.current_subtitle = ""
         self.current_user_text = ""
@@ -399,7 +402,7 @@ class VoiceAgent:
 
         # 긴급 상황 (항상 감지 — 대화 모드 아니어도)
         if any(kw in user_text for kw in self._emergency_keywords):
-            print(f"[VoiceAgent] 🚨 긴급 상황 감지: {user_text}")
+            print(f"[EMERGENCY] 긴급 상황 감지: {user_text}")
             self.is_emergency = True
             response_text = "할머니, 괜찮으세요?! 지금 바로 보호자에게 알릴게요! 잠시만 기다려주세요!"
             self.speak(response_text)
@@ -487,6 +490,12 @@ class VoiceAgent:
                     print(f"[VoiceAgent] 마이크 연결 성공 → 호출어 대기 중... (energy_threshold={self.recognizer.energy_threshold:.1f})")
 
                     while self.is_running:
+                        # 외부 모듈(게임/스트레칭)이 자원 점유 중이면 대기
+                        if not self.is_active:
+                            self.is_listening = False
+                            self.is_conversation_active = False
+                            time.sleep(0.3)
+                            continue
                         # 얼굴 미감지 시 마이크 정지
                         if not self.face_detected:
                             self.is_listening = False
@@ -596,10 +605,16 @@ class VoiceAgent:
                     pass
 
     def listen(self, source) -> str:
+        # 외부에서 pause된 상태면 마이크 점유하지 않고 즉시 반환.
+        # 게임/스트레칭 WebSocket이 자원을 쓸 때 마이크 충돌 방지.
+        if not self.is_active:
+            self.is_listening = False
+            return ""
+
         self.is_listening = True
         self.current_user_text = ""
-        print("[VoiceAgent] 마이크를 열었습니다. 듣는 중... 🎤")
-        while self.is_running:
+        print("[VOICE] 마이크 ON — 듣는 중")
+        while self.is_running and self.is_active:
             try:
                 audio = self.recognizer.listen(source, timeout=1.0, phrase_time_limit=10.0)
                 # 디버그: 포착된 오디오 길이로 너무 짧으면 인식 실패 가능성 높음
@@ -642,19 +657,47 @@ class VoiceAgent:
             print(f"[VoiceAgent] OpenAI Chat API 에러: {e}")
             return "잠시만요~ 인터넷이 좀 아픈가 봐요! 다시 말해줄래? 웅!"
 
+    def _stop_mixer_safely(self):
+        """진행 중인 재생을 안전하게 중지 — 새 재생 시작 전 충돌 방지용."""
+        try:
+            if pygame.mixer.music.get_busy():
+                pygame.mixer.music.stop()
+                time.sleep(0.05)  # 디바이스 자원 해제 대기
+        except Exception:
+            pass
+
+    def _wait_until_done(self, timeout_sec: float = 30.0):
+        """재생 완료 / 외부 pause / 타임아웃까지 대기. 게임 시작 시 즉시 중단."""
+        start = time.time()
+        try:
+            while pygame.mixer.music.get_busy():
+                if not self.is_active:
+                    pygame.mixer.music.stop()
+                    break
+                if time.time() - start > timeout_sec:
+                    pygame.mixer.music.stop()
+                    break
+                time.sleep(0.05)
+        except Exception:
+            pass
+
     def _play_beep(self):
         """대화 전 알림음을 재생합니다."""
+        if not self.is_active:
+            return
         beep_path = config.SOUNDS_DIR / "beep.wav"
         if beep_path.exists():
             try:
+                self._stop_mixer_safely()
                 pygame.mixer.music.load(str(beep_path))
                 pygame.mixer.music.play()
-                while pygame.mixer.music.get_busy():
-                    time.sleep(0.05)
+                self._wait_until_done(timeout_sec=2.0)
             except Exception:
                 pass
 
     def speak(self, text: str):
+        if not self.is_active:
+            return
         self._play_beep()
         self.current_subtitle = text
         try:
@@ -664,15 +707,12 @@ class VoiceAgent:
                 input=text,
                 speed=1.05
             )
-
             response.stream_to_file(self.temp_voice_path)
 
+            self._stop_mixer_safely()
             pygame.mixer.music.load(self.temp_voice_path)
             pygame.mixer.music.play()
-
-            # 음성 재생이 끝날 때까지 대기
-            while pygame.mixer.music.get_busy():
-                time.sleep(0.05)
+            self._wait_until_done(timeout_sec=20.0)
 
             try:
                 pygame.mixer.music.unload()
@@ -680,7 +720,7 @@ class VoiceAgent:
                 pass
 
         except Exception as e:
-            print(f"[VoiceAgent] TTS 에러: {e}")
+            print(f"[VOICE] TTS 에러: {e}")
         finally:
             self.current_subtitle = ""
             # AI 발화 직후 에코 방지 대기
@@ -688,25 +728,27 @@ class VoiceAgent:
 
     def play_sound(self, filename: str, fallback_text: str):
         """준비된 MP3 파일을 우선 재생하고, 파일이 없으면 TTS로 대체(Fallback)합니다."""
+        if not self.is_active:
+            return
         filepath = config.SOUNDS_DIR / filename
         self.current_subtitle = fallback_text
         if filepath.exists():
             self._play_beep()
             try:
+                self._stop_mixer_safely()
                 pygame.mixer.music.load(str(filepath))
                 pygame.mixer.music.play()
-                while pygame.mixer.music.get_busy():
-                    time.sleep(0.1)
+                self._wait_until_done(timeout_sec=15.0)
                 try:
                     pygame.mixer.music.unload()
                 except AttributeError:
                     pass
             except Exception as e:
-                print(f"[VoiceAgent] MP3 재생 에러({filename}): {e}")
+                print(f"[VOICE] MP3 재생 에러({filename}): {e}")
                 self.speak(fallback_text)
             self.current_subtitle = ""
         else:
-            print(f"[VoiceAgent] '{filename}' 파일이 없어 대체 음성(TTS)을 재생합니다.")
+            print(f"[VOICE] '{filename}' 미존재 — TTS로 대체")
             self.speak(fallback_text) # 이 안에서 current_subtitle이 초기화됨
 
     def _record_reply(self, source):
@@ -762,11 +804,36 @@ class VoiceAgent:
 
     def trigger_pill_reminder(self):
         """스케줄러에 의해 호출되어 복약 독촉 멘트를 발생시킵니다."""
-        print("[VoiceAgent] 스케줄러: 복약 알람 발화")
+        print("[VOICE] 복약 알람 발화")
         self.is_conversation_active = True
         reminder_text = "할머니, 약 드실 시간이에요. 잊지 말고 꼭 챙겨 드세요!"
         self.play_sound("pill_remind.mp3", fallback_text=reminder_text)
         self.is_conversation_active = False
+
+    # ─────────────────────────────────────────────────────────
+    # 자원 점유 제어 (게임/스트레칭이 마이크/스피커 쓸 때 일시 정지)
+    # ─────────────────────────────────────────────────────────
+    def pause(self):
+        """마이크/대화 일시 정지. 진행 중인 listen은 1초 내에 빠져나감."""
+        if not self.is_active:
+            return
+        self.is_active = False
+        self.is_listening = False
+        self.is_conversation_active = False
+        # 진행 중인 TTS/효과음도 중단하여 게임 사운드와 충돌 방지
+        try:
+            if pygame.mixer.music.get_busy():
+                pygame.mixer.music.stop()
+        except Exception:
+            pass
+        print("[VOICE] 일시 정지 (외부 모듈이 마이크/스피커 자원 점유)")
+
+    def resume(self):
+        """일시 정지 해제. 호출어 대기 모드로 복귀."""
+        if self.is_active:
+            return
+        self.is_active = True
+        print("[VOICE] 재개 — 호출어 대기 모드로 복귀")
 
 # 단독 실행 테스트용
 if __name__ == "__main__":

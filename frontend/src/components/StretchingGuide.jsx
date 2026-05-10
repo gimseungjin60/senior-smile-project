@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { seniorWsUrl } from '../utils/host'
 import './StretchingGuide.css'
 
-const WS_URL = 'ws://localhost:8000/ws/vision'
+const WS_URL = seniorWsUrl('/ws/vision')
 const CAPTURE_INTERVAL_MS = 200
 
 // 동작별 목표 각도/조건. 각도는 도(°) 단위.

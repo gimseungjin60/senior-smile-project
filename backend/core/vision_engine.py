@@ -79,8 +79,14 @@ class VisionEngine:
             return
         self._initialized = True
 
+        # MediaPipe Solutions API는 thread-safe 보장이 약함.
+        # 멀티 클라이언트 동시 detect 호출 시 segfault/이상 결과가 날 수 있어
+        # 각 모델 호출을 lock으로 직렬화. 라즈베리5 안정성 위해 필수.
+        self._hands_lock = threading.Lock()
+        self._pose_lock = threading.Lock()
+
         if not _MP_AVAILABLE:
-            print("[VisionEngine] mediapipe 미설치 — pip install mediapipe 필요")
+            print("[GAME] mediapipe 미설치 — pip install mediapipe 필요")
             self.hands = None
             self.pose = None
             return
@@ -101,7 +107,7 @@ class VisionEngine:
             min_detection_confidence=0.5,
             min_tracking_confidence=0.5,
         )
-        print("[VisionEngine] MediaPipe Hands + Pose 초기화 완료 (complexity=0)")
+        print("[GAME] MediaPipe Hands + Pose 초기화 완료 (complexity=0)")
 
     def is_ready(self) -> bool:
         return self.hands is not None and self.pose is not None
@@ -110,13 +116,14 @@ class VisionEngine:
     # 손동작 분류 (가위바위보)
     # ─────────────────────────────────────────────────────────
     def detect_hand(self, frame_bgr: np.ndarray) -> HandResult:
-        """BGR 이미지에서 손동작을 분류합니다."""
+        """BGR 이미지에서 손동작을 분류합니다. (thread-safe)"""
         if not self.is_ready():
             return HandResult(False, "unknown", [], 0.0)
 
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         rgb.flags.writeable = False
-        result = self.hands.process(rgb)
+        with self._hands_lock:
+            result = self.hands.process(rgb)
         if not result.multi_hand_landmarks:
             return HandResult(False, "unknown", [], 0.0)
 
@@ -173,13 +180,14 @@ class VisionEngine:
     # 포즈 분석 (스트레칭)
     # ─────────────────────────────────────────────────────────
     def detect_pose(self, frame_bgr: np.ndarray) -> PoseResult:
-        """BGR 이미지에서 포즈 랜드마크 + 주요 관절 각도를 계산합니다."""
+        """BGR 이미지에서 포즈 랜드마크 + 주요 관절 각도를 계산합니다. (thread-safe)"""
         if not self.is_ready():
             return PoseResult(False, [], {})
 
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         rgb.flags.writeable = False
-        result = self.pose.process(rgb)
+        with self._pose_lock:
+            result = self.pose.process(rgb)
         if not result.pose_landmarks:
             return PoseResult(False, [], {})
 
