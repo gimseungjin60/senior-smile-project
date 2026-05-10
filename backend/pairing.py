@@ -40,8 +40,8 @@ class PairingManager:
             except Exception as e:
                 logger.warning(f"[Pairing] Firebase 연결 실패: {e}")
 
-        # 기존 페어링 상태 복구
-        self._restore_pairing()
+        # 서버 재시작 시 항상 비페어링 상태에서 시작 (시연마다 새 PIN 발급)
+        # self._restore_pairing()
 
     def _restore_pairing(self):
         """서버 재시작 시 기존 페어링 상태를 Firebase에서 복구"""

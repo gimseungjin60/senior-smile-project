@@ -1,7 +1,9 @@
-# Python 가상환경
+# Python 가상환경 / 캐시
 backend/.venv/
-backend/__pycache__/
-backend/*.pyc
+backend/venv/
+backend/.venv-*/
+**/__pycache__/
+*.pyc
 
 # macOS
 .DS_Store
@@ -21,3 +23,14 @@ backend/device_id.json
 backend/users_local.json
 backend/voice_messages/
 *.env
+
+# 런타임 상태 / 임시 파일
+backend/greeting_state.json
+backend/sounds/temp_*
+
+# 대용량 모델 (필요 시 LFS로 별도 관리)
+backend/models/*.onnx
+
+# Claude 로컬 작업 메모
+.claude/plans/
+.claude/settings.local.json

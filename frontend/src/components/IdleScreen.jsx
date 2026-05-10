@@ -108,8 +108,9 @@ function IdleScreen({ pairing }) {
     }
   }, [isPairedVal]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const isPaired = pairing?.is_paired
-  const showPairing = pairing && !isPaired
+  const isPaired = pairing?.is_paired === true
+  const isConnecting = pairing == null
+  const showPairing = !isPaired && !isConnecting
 
   return (
     <div className={`idle-screen ${isNight ? 'idle-screen--night' : ''}`}>
@@ -121,7 +122,12 @@ function IdleScreen({ pairing }) {
         </div>
         <div className="date">{formatDate(now)}</div>
 
-        {showPairing ? (
+        {isConnecting ? (
+          <div className="pairing-card">
+            <p className="pairing-title">서버에 연결 중입니다...</p>
+            <p className="pairing-timer">잠시만 기다려주세요</p>
+          </div>
+        ) : showPairing ? (
           <div className="pairing-card">
             <p className="pairing-title">보호자 앱에서 아래 코드를 입력하세요</p>
             {pairingCode ? (
@@ -145,7 +151,7 @@ function IdleScreen({ pairing }) {
                 코드 생성하기
               </button>
             )}
-            <p className="pairing-device-id">기기 ID: {pairing.device_id}</p>
+            <p className="pairing-device-id">기기 ID: {pairing?.device_id || '—'}</p>
           </div>
         ) : (
           <div className="idle-weather-card">

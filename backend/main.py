@@ -15,7 +15,7 @@ import cv2
 import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, HTMLResponse, FileResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 logging.basicConfig(level=logging.INFO)
@@ -253,15 +253,7 @@ class FaceDetector:
             if confidence > config.DNN_CONFIDENCE:
                 face_found = True
 
-                if self.current_status in ("greeting", "active"):
-                    box = detections[0, 0, i, 3:7] * [raw_w, raw_h, raw_w, raw_h]
-                    bx1, by1, bx2, by2 = box.astype(int)
-
-                    x1 = int(bx1 * scale) - x_offset
-                    y1 = int(by1 * scale) - y_offset
-                    x2 = int(bx2 * scale) - x_offset
-                    y2 = int(by2 * scale) - y_offset
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 200, 0), 2)
+                # 보호자 앱 카메라 뷰에 녹색 얼굴 박스가 거슬려서 제거 (시연용)
 
         target_frame = frame.copy()
         now = time.time()
@@ -285,10 +277,7 @@ class FaceDetector:
                 target_frame = np.zeros((target_h, target_w, 3), dtype=np.uint8)
 
         if self.current_status in ("greeting", "active"):
-            if getattr(self.voice_agent, 'is_listening', False):
-                radius = int(25 + 10 * np.sin(now * 8))
-                cv2.circle(target_frame, (target_w - 60, 60), radius, (0, 0, 255), -1)
-                cv2.circle(target_frame, (target_w - 60, 60), radius + 5, (255, 255, 255), 2)
+            # 보호자 앱 카메라 뷰에 펄스하는 빨간 마이크 원이 거슬려서 제거 (시연용)
 
             if self.voice_agent and self.voice_agent.current_subtitle:
                 if self.voice_agent.current_subtitle != self.last_subtitle:
@@ -314,21 +303,7 @@ class FaceDetector:
             else:
                 self.last_subtitle = ""
 
-            if self.voice_agent and getattr(self.voice_agent, 'is_pill_taken', False):
-                pill_text = "[ PILL DONE ]"
-                bg_color = (0, 255, 0)
-                alpha = 0.8
-            else:
-                pill_text = "[ CHECK PILL ]"
-                bg_color = (255, 0, 0)
-                alpha = (np.sin(now * 6) + 1) / 2.0 * 0.7 + 0.1
-
-            overlay = target_frame.copy()
-            cv2.rectangle(overlay, (target_w - 360, target_h - 100), (target_w - 20, target_h - 20), bg_color[::-1], -1)
-            cv2.addWeighted(overlay, alpha, target_frame, 1.0 - alpha, 0, target_frame)
-            target_frame = self._draw_pillow_text(
-                target_frame, pill_text, (target_w - 340, target_h - 80), size=40, color=(255, 255, 255)
-            )
+            # 보호자 앱 카메라 뷰에 깜빡이는 빨간 박스가 거슬려서 PILL 표시 제거 (시연용)
 
         if self.prev_state != self.current_status:
             self.state_blend_start = now
@@ -482,6 +457,10 @@ class FaceDetector:
 
         if status == "idle":
             if face_found:
+                # 페어링 전에는 인사/대화 시작하지 않음 (보호자 연결 후에만 작동)
+                if not self.pairing.is_paired:
+                    self._detect_streak = 0
+                    return
                 self._detect_streak += 1
                 if self._detect_streak >= config.DETECTION_CONFIRM_FRAMES:
                     self._detect_streak = 0
@@ -1899,4 +1878,17 @@ async def video_stream():
     return StreamingResponse(
         _mjpeg_generator(),
         media_type="multipart/x-mixed-replace; boundary=frame",
+    )
+
+
+@app.get("/snapshot")
+async def snapshot():
+    """단일 JPEG 프레임 반환 — RN <Image>에서 폴링 가능 (MJPEG는 네이티브 미지원)"""
+    frame = detector.latest_frame
+    if not frame:
+        return Response(status_code=204)
+    return Response(
+        content=frame,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
     )
