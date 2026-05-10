@@ -33,7 +33,17 @@ class VoiceAgent:
         self.face_detected = False
 
         # 호출어 기반 대화 활성화
-        self._wake_words = ["앨범아", "앨범 아", "엘범아", "앨버마", "앨범"]
+        # Whisper STT가 노인 발음을 다양한 변형으로 인식할 수 있어 합리적 변형 폭넓게 등록.
+        # "앨범" 단독은 TV/광고 오인식 위험으로 제외.
+        self._wake_words = [
+            "앨범아", "앨범 아",
+            "앨버마", "앨버 마",
+            "앨봄아", "앨봄 아",
+            "앰범아", "앰버마",
+            "엘범아", "엘버마",
+            "앨범야", "앨범 야",
+            "앨범 아이", "앨버마이",
+        ]
         self.is_conversation_active = False  # 호출어 감지 후 대화 모드
         self._conversation_timeout = 10  # 무응답 시 대기 모드 복귀 (초)
         self._last_interaction_time = 0
@@ -43,7 +53,21 @@ class VoiceAgent:
 
         # 긴급 상황 상태
         self.is_emergency = False
-        self._emergency_keywords = ["아파", "아프", "쓰러", "살려", "도와", "어지러", "못 움직", "119", "응급"]
+        # 노인이 응급 시 쓸 수 있는 표현 폭넓게 커버. 명확한 응급 표현만 추가해 오인 알림 방지.
+        self._emergency_keywords = [
+            # 통증/불편
+            "아파", "아프", "어지러", "어지럽", "토할", "메스꺼",
+            # 자세/움직임
+            "쓰러", "쓰러졌", "넘어졌", "넘어 졌", "못 움직", "못움직", "못 일어",
+            # 호흡/심혈관
+            "숨이 차", "숨이 안", "가슴이 답답", "가슴이 아", "심장이",
+            # 도움 요청
+            "살려", "도와줘", "도와주", "사람 좀",
+            # 명시적 호출
+            "119", "응급", "구급",
+            # 상해
+            "다쳤", "피가 나", "피가 안", "기절",
+        ]
 
         # 푸시 알림 매니저 (main.py에서 주입)
         self.notifier = None
@@ -303,9 +327,25 @@ class VoiceAgent:
         self._last_interaction_time = time.time()
         self.chat_history.append(f"사용자: {user_text}")
 
-        # 새 사진 수락/거절
+        # 새 사진 수락/거절 (노인 응답 다양성 대응)
         if self.is_asking_photo:
-            if any(w in user_text for w in ["응", "어", "보여줘", "그래", "띄워", "확인"]):
+            photo_yes = [
+                "응", "어", "어어", "예", "네",
+                "그래", "그러게", "그래라",
+                "보여", "보여줘", "보여 줘", "보고 싶",
+                "띄워", "띄워줘",
+                "확인", "확인해",
+                "좋아", "좋지", "좋겠",
+                "봐", "볼래", "볼게",
+            ]
+            photo_no = [
+                "아니", "안 봐", "안볼", "안 볼",
+                "나중에", "이따가", "이따", "다음에",
+                "됐어", "됐다", "괜찮", "안 돼", "안돼",
+                "싫어", "싫다",
+                "지금은 안", "지금은 됐",
+            ]
+            if any(w in user_text for w in photo_yes):
                 self.speak("네! 화면에 예쁘게 띄울게요!")
                 self.chat_history.append("AI: 네! 화면에 예쁘게 띄울게요!")
                 self.new_photo_url = self.pending_photo_url
@@ -313,7 +353,7 @@ class VoiceAgent:
                 self.is_asking_photo = False
                 if self.notifier:
                     self.notifier.notify_new_photo_viewed()
-            elif any(w in user_text for w in ["아니", "나중에", "됐어", "안 "]):
+            elif any(w in user_text for w in photo_no):
                 self.speak("알겠어요! 이따가 다시 물어볼게요 헤헤.")
                 self.chat_history.append("AI: 알겠어요! 이따가 다시 물어볼게요 헤헤.")
                 self.is_asking_photo = False
@@ -323,8 +363,15 @@ class VoiceAgent:
                 self.chat_history.append(f"AI: {response_text}")
             return
 
-        # 답장 녹음
-        if any(kw in user_text for kw in ["답장", "답할래", "보내줘", "전해줘", "말 전해"]):
+        # 답장 녹음 (노인 표현 다양성)
+        reply_keywords = [
+            "답장", "답할래", "답할게", "답해", "답하",
+            "보내줘", "보낼래", "보낼게", "보내자",
+            "전해", "전해줘", "전할래", "말 전해", "말전해",
+            "음성으로", "녹음해", "녹음할래", "녹음 해",
+            "메시지", "메시지 보",
+        ]
+        if any(kw in user_text for kw in reply_keywords):
             self.speak("네! 지금부터 녹음할게요. 말씀해주세요!")
             self._record_reply(source)
             return
@@ -340,15 +387,41 @@ class VoiceAgent:
                 self.notifier.notify_emergency(user_text)
             return
 
-        # 대화 종료
-        if any(w in user_text for w in ["그만", "들어가", "잘 자", "끊어"]):
+        # 대화 종료 (노인 표현 다양성)
+        end_keywords = [
+            "그만", "그만해", "그만하자", "이제 그만", "고만",
+            "들어가", "들어가야", "들어가자",
+            "잘 자", "잘자", "잘 자라",
+            "잘 가", "잘가",
+            "안녕", "안녕히",
+            "갈게", "갈래", "가야",
+            "쉬어", "쉴래", "쉬자",
+            "잠 잘", "잠잘", "자야", "잘게",
+            "끊어", "끊자",
+            "이제 됐", "고마워 그만",
+        ]
+        if any(w in user_text for w in end_keywords):
             self.speak("네, 알겠습니다. 푹 쉬세요! 다음에 또 올게요.")
             self.chat_history.append("AI: 네, 알겠습니다. 푹 쉬세요! 다음에 또 올게요.")
             self.is_conversation_active = False
             return
 
-        # 약 복용
-        if "약" in user_text and ("먹었" in user_text or "묵었" in user_text):
+        # 약 복용 (노인 발음/방언 + 부정문 회피)
+        # 긍정 패턴: "약 먹었어", "약 묵었어"(방언), "약 챙겼어", "약 삼켰어"
+        # 부정 패턴 회피: "약 안 먹었어", "약 못 먹었어", "약 깜빡했어" 등은 매칭 안 함
+        pill_taken_words = ["먹었", "묵었", "챙겼", "삼켰", "잘 먹", "챙겨 먹", "잡쉈"]
+        pill_negation = [
+            "안 먹", "안먹", "못 먹", "못먹",
+            "안 챙", "안챙",
+            "안 묵", "안묵",
+            "안 삼", "안삼",
+            "깜빡", "잊어", "잊었", "까먹",
+            "아직 안", "아직안",
+        ]
+        is_pill_text = "약" in user_text and any(k in user_text for k in pill_taken_words)
+        is_pill_negated = any(n in user_text for n in pill_negation)
+
+        if is_pill_text and not is_pill_negated:
             print("[VoiceAgent] 약 복용 확인됨!")
             self.is_pill_taken = True
             self._match_and_log_medication()
@@ -359,8 +432,13 @@ class VoiceAgent:
             self.chat_history.append(f"AI: {response_text} {advice_text}")
             if self.notifier:
                 self.notifier.notify_pill_taken()
-        # 식사 안부
-        elif "밥" in user_text or "식사" in user_text:
+        elif is_pill_text and is_pill_negated:
+            # 명시적으로 안 드셨다고 한 경우 — 매칭하지 않고 부드럽게 안내
+            response_text = "아직 안 드셨구나~ 시간 되시면 꼭 챙겨 드세요, 헤헤~"
+            self.speak(response_text)
+            self.chat_history.append(f"AI: {response_text}")
+        # 식사 안부 (노인 표현 다양성)
+        elif any(k in user_text for k in ["밥", "식사", "끼니", "아침 먹", "점심 먹", "저녁 먹", "잡수"]):
             response_text = "건강을 위해 식사는 꼭 챙겨 드세요."
             self.play_sound("meal_check.mp3", fallback_text=response_text)
             self.chat_history.append(f"AI: {response_text}")
