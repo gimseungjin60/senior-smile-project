@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import time
 import logging
 import threading
@@ -167,11 +168,16 @@ class FaceDetector:
             user_text = getattr(self.voice_agent, 'current_user_text', "")
             new_photo_url = getattr(self.voice_agent, 'new_photo_url', None)
             is_conversation_active = getattr(self.voice_agent, 'is_conversation_active', False)
+            requested_activity = getattr(self.voice_agent, 'requested_activity', None)
             if new_photo_url:
                 self.voice_agent.new_photo_url = None
+            # 활동은 한 번만 전송하고 비움 (중복 트리거 방지)
+            if requested_activity:
+                self.voice_agent.requested_activity = None
 
         voice_state = (subtitle, is_listening, is_pill_taken, user_text, is_emergency, is_conversation_active)
-        if voice_state == getattr(self, '_last_voice_state', None) and not new_photo_url:
+        if (voice_state == getattr(self, '_last_voice_state', None)
+                and not new_photo_url and not requested_activity):
             return
         self._last_voice_state = voice_state
 
@@ -187,6 +193,8 @@ class FaceDetector:
 
         if new_photo_url:
             payload["newPhotoUrl"] = new_photo_url
+        if requested_activity:
+            payload["activity"] = requested_activity
 
         disconnected = set()
         for client in self.clients:
@@ -753,6 +761,111 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         detector.clients.discard(websocket)
         logger.info(f"WebSocket 해제 (총 {len(detector.clients)}개)")
+
+
+@app.websocket("/ws/vision")
+async def ws_vision(websocket: WebSocket):
+    """
+    인지 게임(가위바위보 져주기) + 스트레칭 가이드용 비전 WebSocket.
+
+    수신 메시지:
+    - {"type": "config", "aiMove": "rock"|"paper"|"scissors"}  — RPS 게임 시작 시
+    - {"type": "frame", "mode": "rps"|"pose", "data": "<base64 jpeg>"}
+
+    송신 메시지:
+    - RPS: {"type": "rps", "detected", "gesture", "confidence", "judgement", "aiMove"}
+    - Pose: {"type": "pose", "detected", "landmarks", "angles"}
+    """
+    # vision_engine import는 mediapipe 미설치 환경에서 메인 앱 부팅을 막지 않도록 지연
+    try:
+        from core.vision_engine import VisionEngine, judge_lose_game
+    except ImportError as e:
+        await websocket.accept()
+        await websocket.send_json({
+            "type": "error",
+            "message": f"vision engine import 실패: {e}",
+        })
+        await websocket.close()
+        return
+
+    await websocket.accept()
+    engine = VisionEngine()
+    if not engine.is_ready():
+        await websocket.send_json({
+            "type": "error",
+            "message": "MediaPipe 미설치 — 'pip install mediapipe' 후 재시작 필요",
+        })
+        await websocket.close()
+        return
+
+    logger.info("[VisionWS] 연결 수립")
+    ai_move: Optional[str] = None
+
+    try:
+        while True:
+            msg = await websocket.receive_json()
+            mtype = msg.get("type")
+
+            if mtype == "config":
+                ai_move = msg.get("aiMove")
+                await websocket.send_json({"type": "ack", "aiMove": ai_move})
+                continue
+
+            if mtype != "frame":
+                continue
+
+            data_b64 = msg.get("data", "")
+            if not data_b64:
+                continue
+
+            # base64 jpeg → numpy BGR (data URL prefix 제거)
+            try:
+                img_bytes = base64.b64decode(data_b64.split(",")[-1])
+                arr = np.frombuffer(img_bytes, dtype=np.uint8)
+                frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            except Exception:
+                continue
+            if frame is None:
+                continue
+
+            # 라즈베리5 부하 절감: 320 너비로 다운스케일 (가로/세로 비율 유지)
+            h, w = frame.shape[:2]
+            if w > 320:
+                new_h = int(h * 320 / w)
+                frame = cv2.resize(frame, (320, new_h))
+
+            mode = msg.get("mode", "rps")
+            if mode == "rps":
+                # 블로킹 호출은 별도 스레드로 위임
+                result = await asyncio.to_thread(engine.detect_hand, frame)
+                judgement = (
+                    judge_lose_game(ai_move, result.gesture) if ai_move else "unknown"
+                )
+                await websocket.send_json({
+                    "type": "rps",
+                    "detected": result.detected,
+                    "gesture": result.gesture,
+                    "confidence": result.confidence,
+                    "judgement": judgement,
+                    "aiMove": ai_move,
+                })
+            elif mode == "pose":
+                result = await asyncio.to_thread(engine.detect_pose, frame)
+                await websocket.send_json({
+                    "type": "pose",
+                    "detected": result.detected,
+                    "landmarks": result.landmarks,
+                    "angles": result.angles,
+                })
+
+    except WebSocketDisconnect:
+        logger.info("[VisionWS] 연결 해제")
+    except Exception as e:
+        logger.error(f"[VisionWS] 오류: {e}")
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 @app.get("/status")

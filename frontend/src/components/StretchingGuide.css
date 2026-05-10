@@ -1,0 +1,174 @@
+.stretch-guide {
+  position: fixed;
+  inset: 0;
+  background: #0F172A;
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  z-index: 100;
+  overflow: hidden;
+}
+
+.stretch-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 40px;
+  background: #1E293B;
+  border-bottom: 4px solid #16A34A;
+}
+
+.stretch-header h1 {
+  font-size: 56px;
+  font-weight: 800;
+  margin: 0;
+  color: #16A34A;
+}
+
+.stretch-exit {
+  font-size: 32px;
+  font-weight: 700;
+  padding: 14px 32px;
+  background: #C2410C;
+  color: #fff;
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+  min-height: 64px;
+}
+
+.stretch-error {
+  position: absolute;
+  top: 110px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #DC2626;
+  color: #fff;
+  padding: 16px 32px;
+  border-radius: 12px;
+  font-size: 28px;
+  font-weight: 700;
+  z-index: 20;
+}
+
+.stretch-body {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  padding: 40px;
+  gap: 40px;
+}
+
+/* 좌측 안내 */
+.stretch-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  max-width: 50%;
+}
+
+.stretch-title {
+  font-size: 80px;
+  font-weight: 800;
+  margin: 0;
+  color: #FFD700;
+  line-height: 1.1;
+}
+
+.stretch-desc {
+  font-size: 44px;
+  color: #cbd5e1;
+  margin: 0;
+  line-height: 1.4;
+}
+
+/* 진행률 게이지 */
+.stretch-progress-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.stretch-progress-label {
+  font-size: 36px;
+  font-weight: 700;
+  color: #94a3b8;
+}
+
+.stretch-progress-bar {
+  height: 48px;
+  background: #1E293B;
+  border-radius: 24px;
+  border: 3px solid #334155;
+  overflow: hidden;
+}
+
+.stretch-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #FBBF24, #16A34A);
+  transition: width 0.25s ease;
+  border-radius: 21px;
+}
+
+.stretch-progress-fill--done {
+  background: #16A34A;
+  animation: stretch-glow 1s ease infinite alternate;
+}
+
+@keyframes stretch-glow {
+  from { box-shadow: 0 0 20px rgba(22, 163, 74, 0.5); }
+  to { box-shadow: 0 0 40px rgba(22, 163, 74, 1); }
+}
+
+.stretch-progress-text {
+  font-size: 32px;
+  color: #cbd5e1;
+  font-weight: 600;
+}
+
+.stretch-next {
+  align-self: flex-start;
+  font-size: 44px;
+  font-weight: 800;
+  padding: 24px 64px;
+  background: #16A34A;
+  color: #fff;
+  border: none;
+  border-radius: 20px;
+  cursor: pointer;
+  margin-top: 16px;
+  box-shadow: 0 8px 24px rgba(22, 163, 74, 0.5);
+  min-height: 88px;
+}
+
+/* 우측 카메라 */
+.stretch-camera-wrap {
+  flex: 1;
+  position: relative;
+  max-width: 50%;
+  aspect-ratio: 4/3;
+  border-radius: 24px;
+  overflow: hidden;
+  border: 6px solid #16A34A;
+  background: #000;
+}
+
+.stretch-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* 거울처럼 좌우 반전 (자연스러운 자가 피드백) */
+  transform: scaleX(-1);
+}
+
+.stretch-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  /* 랜드마크도 동일하게 좌우 반전 */
+  transform: scaleX(-1);
+}

@@ -5,6 +5,8 @@ import ActiveScreen from './components/ActiveScreen'
 import StatusIndicator from './components/StatusIndicator'
 import SubtitleBar from './components/SubtitleBar'
 import ReminderScreen from './components/ReminderScreen'
+import CognitiveGame from './components/CognitiveGame'
+import StretchingGuide from './components/StretchingGuide'
 import './App.css'
 
 const WS_URL = 'ws://localhost:8000/ws'
@@ -25,6 +27,7 @@ function App() {
   const [isConversationActive, setIsConversationActive] = useState(false)
   const [activeReminder, setActiveReminder] = useState(null)
   const [reminderExiting, setReminderExiting] = useState(false)
+  const [activity, setActivity] = useState(null)  // 'cognitive_game' | 'stretching' | null
   const transitionTimer = useRef(null)
   const reminderExitTimer = useRef(null)
 
@@ -81,10 +84,12 @@ function App() {
           if (data.isEmergency) setIsEmergency(true)
           if (data.newPhotoUrl) setNewPhotoUrl(data.newPhotoUrl)
           if (data.isConversationActive !== undefined) setIsConversationActive(data.isConversationActive)
+          if (data.activity) setActivity(data.activity)
           return
         }
 
         if (data.status) setStatus(data.status)
+        if (data.activity !== undefined) setActivity(data.activity || null)
         if (data.subtitle !== undefined) setSubtitle(data.subtitle || '')
         if (data.isListening !== undefined) setIsListening(data.isListening || false)
         if (data.isPillTaken !== undefined) setIsPillTaken(data.isPillTaken || false)
@@ -116,6 +121,9 @@ function App() {
         message: '잊지 말고 꼭 챙겨 드세요!', time: '09:00',
       })
       if (e.key === 'l') { setIsListening(true); setSubtitle('네, 말씀하세요!'); setUserText('앨범아') }
+      if (e.key === 'g') setActivity('cognitive_game')
+      if (e.key === 's') setActivity('stretching')
+      if (e.key === 'x') setActivity(null)
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
@@ -134,6 +142,14 @@ function App() {
     if (visibleStatus === 'idle') return <IdleScreen pairing={pairing} />
     if (visibleStatus === 'greeting') return <GreetScreen />
     return <ActiveScreen newPhotoUrl={newPhotoUrl} />
+  }
+
+  // 활동(게임/스트레칭)이 활성이면 모든 메인 화면을 덮음
+  if (activity === 'cognitive_game') {
+    return <CognitiveGame onExit={() => setActivity(null)} />
+  }
+  if (activity === 'stretching') {
+    return <StretchingGuide onExit={() => setActivity(null)} />
   }
 
   return (

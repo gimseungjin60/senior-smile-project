@@ -75,6 +75,10 @@ class VoiceAgent:
         # 보호자 음성 메시지 대기열
         self.pending_voice_msg = None
 
+        # 활동(게임/스트레칭) 요청 — 프론트가 다음 broadcast에서 받아 화면 전환
+        # 'cognitive_game' | 'stretching' | None
+        self.requested_activity = None
+
         # TTS 임시 파일 경로 (절대경로)
         self.temp_voice_path = str(config.SOUNDS_DIR / "temp_voice.mp3")
 
@@ -361,6 +365,23 @@ class VoiceAgent:
                 response_text = self.get_openai_response(user_text)
                 self.speak(response_text)
                 self.chat_history.append(f"AI: {response_text}")
+            return
+
+        # 활동(게임/스트레칭) 트리거 — 키워드로 화면 전환 요청
+        # 노인 표현 다양성: "심심해", "게임하자", "운동하자" 등
+        game_keywords = ["게임하자", "게임 하자", "게임할래", "게임 할래", "심심해", "심심하", "놀자", "놀아"]
+        stretch_keywords = ["운동하자", "운동 하자", "운동할래", "스트레칭", "체조", "몸 풀자", "몸풀자"]
+        if any(k in user_text for k in game_keywords):
+            self.requested_activity = "cognitive_game"
+            response_text = "좋아요! 손주랑 가위바위보 져주기 게임 해요, 헤헤~"
+            self.speak(response_text)
+            self.chat_history.append(f"AI: {response_text}")
+            return
+        if any(k in user_text for k in stretch_keywords):
+            self.requested_activity = "stretching"
+            response_text = "네! 같이 몸 풀어봐요. 화면 따라 천천히 해주세요!"
+            self.speak(response_text)
+            self.chat_history.append(f"AI: {response_text}")
             return
 
         # 답장 녹음 (노인 표현 다양성)
