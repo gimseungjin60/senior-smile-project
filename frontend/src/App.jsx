@@ -7,6 +7,7 @@ import SubtitleBar from './components/SubtitleBar'
 import ReminderScreen from './components/ReminderScreen'
 import CognitiveGame from './components/CognitiveGame'
 import StretchingGuide from './components/StretchingGuide'
+import MediaBridge from './components/MediaBridge'
 import { seniorWsUrl } from './utils/host'
 import './App.css'
 
@@ -175,6 +176,8 @@ function App() {
 
   return (
     <div className="app">
+      {/* 태블릿 카메라/마이크/스피커 ↔ 백엔드 미디어 다리 (CAMERA_SOURCE=tablet 환경에서만 의미) */}
+      <MediaBridge />
       {/* 메인 콘텐츠 — 호출어 인식 시 오른쪽으로 밀림 */}
       <div className={`app-main ${isConversationActive ? 'app-main--pushed' : ''}`}>
         {/* 기본 화면 — 항상 마운트 상태 유지 */}

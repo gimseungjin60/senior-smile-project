@@ -46,6 +46,9 @@ AIBUM_BACKEND_URL = os.environ.get("AIBUM_BACKEND_URL", "http://localhost:8001")
 DEVICE_ID = config.DEVICE_ID
 HEARTBEAT_INTERVAL = 60
 
+# 카메라 입력 소스: "usb" (라즈베리파이의 cv2.VideoCapture) 또는 "tablet" (시니어 프론트 WebSocket)
+CAMERA_SOURCE = os.environ.get("CAMERA_SOURCE", "usb").lower()
+
 
 class FaceDetector:
     """
@@ -245,6 +248,16 @@ class FaceDetector:
         self.clients -= disconnected
         logger.info(f"[리마인더] {reminder_type} 프론트엔드 전송")
 
+    def _detect_face_only(self, raw_frame):
+        """얼굴 감지만 — UI 렌더링/JPEG 인코딩 없음. tablet 모드용 (시니어 프론트가 자체 UI 그림)."""
+        blob = cv2.dnn.blobFromImage(raw_frame, 1.0, (300, 300), (104, 177, 123))
+        self.net.setInput(blob)
+        detections = self.net.forward()
+        for i in range(detections.shape[2]):
+            if detections[0, 0, i, 2] > config.DNN_CONFIDENCE:
+                return True
+        return False
+
     def _detect_and_encode(self, raw_frame):
         """DNN 얼굴 감지 + 1280x720 UI 렌더링 + JPEG 인코딩"""
         target_w, target_h = 1280, 720
@@ -427,25 +440,30 @@ class FaceDetector:
         return False
 
     async def run_detection_loop(self):
-        """페어링된 상태일 때만 카메라 열고 얼굴 감지. 미페어링이면 카메라 닫고 대기."""
+        """페어링된 상태일 때만 얼굴 감지.
+        CAMERA_SOURCE=usb: cv2.VideoCapture 로 라즈베리파이 USB 웹캠 직접 사용
+        CAMERA_SOURCE=tablet: latest_frame 은 /ws/media 핸들러가 시니어 프론트(태블릿)로부터 받아 set"""
         self.running = True
         loop = asyncio.get_event_loop()
         consecutive_failures = 0
         MAX_FAILURES = 30
 
+        is_tablet = CAMERA_SOURCE == "tablet"
+        if is_tablet:
+            logger.info("[Camera] tablet 모드 — /ws/media 로 시니어 프론트에서 frame 받음")
+
         try:
             while self.running:
-                # 미페어링 상태 — 카메라 + voice agent 다 닫고 대기 (사생활 보호 + 자원 절약)
+                # 미페어링 가드 — 카메라/voice agent 정리
                 if not self.pairing.is_paired:
-                    if self.camera is not None:
+                    if not is_tablet and self.camera is not None:
                         try:
                             self.camera.release()
                         except Exception:
                             pass
                         self.camera = None
-                        self.latest_frame = None
                         logger.info("[Camera] 미페어링 — 카메라 해제")
-                    # voice agent 가 살아있다면 종료 (이중 안전망)
+                    self.latest_frame = None
                     try:
                         with self._voice_lock:
                             if self.voice_agent and getattr(self.voice_agent, 'is_running', False):
@@ -458,39 +476,53 @@ class FaceDetector:
                     await asyncio.sleep(1)
                     continue
 
-                # 페어링 됨 — 카메라 안 열려있으면 열기
-                if self.camera is None:
-                    if not self._open_camera():
-                        await asyncio.sleep(5)
+                # 페어링 됨 — 카메라 source 분기
+                if is_tablet:
+                    # tablet 모드: latest_frame 은 /ws/media handler 가 외부에서 set
+                    if self.latest_frame is None:
+                        await asyncio.sleep(0.2)
                         continue
-                    logger.info("[Camera] 페어링 완료 — 카메라 시작")
+                    arr = np.frombuffer(self.latest_frame, dtype=np.uint8)
+                    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                    if frame is None:
+                        await asyncio.sleep(0.2)
+                        continue
+                    face_found = await loop.run_in_executor(None, self._detect_face_only, frame)
+                    # latest_frame 은 JPEG 그대로 유지 (LiveKit publisher 가 그대로 publish)
+                else:
+                    # USB 모드: 기존 cv2.VideoCapture 흐름
+                    if self.camera is None:
+                        if not self._open_camera():
+                            await asyncio.sleep(5)
+                            continue
+                        logger.info("[Camera] 페어링 완료 — 카메라 시작")
+                        consecutive_failures = 0
+
+                    ret, frame = await loop.run_in_executor(None, self.camera.read)
+                    if not ret:
+                        consecutive_failures += 1
+                        if consecutive_failures >= MAX_FAILURES:
+                            logger.warning(f"카메라 프레임 {MAX_FAILURES}회 연속 실패. 재연결 시도...")
+                            if self.current_status != "idle":
+                                await self._transition("idle")
+                            try:
+                                if self.camera:
+                                    self.camera.release()
+                            except Exception:
+                                pass
+                            self.camera = None
+                            consecutive_failures = 0
+                            await asyncio.sleep(1)
+                        else:
+                            await asyncio.sleep(0.5)
+                        continue
+
                     consecutive_failures = 0
 
-                ret, frame = await loop.run_in_executor(None, self.camera.read)
-                if not ret:
-                    consecutive_failures += 1
-                    if consecutive_failures >= MAX_FAILURES:
-                        logger.warning(f"카메라 프레임 {MAX_FAILURES}회 연속 실패. 재연결 시도...")
-                        if self.current_status != "idle":
-                            await self._transition("idle")
-                        try:
-                            if self.camera:
-                                self.camera.release()
-                        except Exception:
-                            pass
-                        self.camera = None  # 다음 loop iteration에서 다시 열림
-                        consecutive_failures = 0
-                        await asyncio.sleep(1)
-                    else:
-                        await asyncio.sleep(0.5)
-                    continue
-
-                consecutive_failures = 0
-
-                face_found, jpeg = await loop.run_in_executor(
-                    None, self._detect_and_encode, frame
-                )
-                self.latest_frame = jpeg
+                    face_found, jpeg = await loop.run_in_executor(
+                        None, self._detect_and_encode, frame
+                    )
+                    self.latest_frame = jpeg
 
                 now = time.time()
 
@@ -501,7 +533,7 @@ class FaceDetector:
                 await self.broadcast_voice_state()
                 await asyncio.sleep(config.FRAME_INTERVAL)
         finally:
-            if self.camera:
+            if not is_tablet and self.camera:
                 try:
                     self.camera.release()
                 except Exception:
@@ -549,16 +581,22 @@ scheduler = BackgroundScheduler()
 
 
 def _on_pairing_completed(device_id: str, uid: str):
-    """Cloud Function이 PIN을 claim하면 Firestore 리스너가 이 콜백을 호출"""
+    """FirestorePairingListener 가 PIN claim 감지 → 시니어 프론트에 페어링 완료 broadcast.
+    DevicesListener 의 _on_device_paired 와 동일한 형식 사용 (시니어 프론트가 type==='pairing' 만 처리)."""
     loop = getattr(detector, '_loop', None)
-    if loop:
-        async def _broadcast():
-            for client in list(detector.clients):
-                try:
-                    await client.send_json({"type": "pairing_completed", "deviceId": device_id, "uid": uid})
-                except Exception:
-                    pass
-        asyncio.run_coroutine_threadsafe(_broadcast(), loop)
+    if not loop:
+        return
+
+    async def _broadcast():
+        pairing_status = detector.pairing.get_status()
+        n_clients = len(detector.clients)
+        logger.info(f"[_on_pairing_completed] WS broadcast → {n_clients}개 client, uid={uid}, payload={pairing_status}")
+        for client in list(detector.clients):
+            try:
+                await client.send_json({"type": "pairing", "pairing": pairing_status})
+            except Exception as e:
+                logger.warning(f"[_on_pairing_completed] client broadcast 실패: {e}")
+    asyncio.run_coroutine_threadsafe(_broadcast(), loop)
 
 
 _pairing_listener = FirestorePairingListener(
@@ -917,6 +955,64 @@ async def websocket_endpoint(websocket: WebSocket):
             await websocket.receive_text()
     except WebSocketDisconnect:
         detector.clients.discard(websocket)
+
+
+# 시니어 프론트(태블릿) ↔ 백엔드 미디어 다리.
+# binary 첫 byte 로 메시지 type 구분: 0x00 video frame(JPEG), 0x01 audio out(TTS), 0x02 audio in(PCM)
+MEDIA_TYPE_VIDEO = 0x00
+MEDIA_TYPE_AUDIO_OUT = 0x01
+MEDIA_TYPE_AUDIO_IN = 0x02
+
+# 시니어 프론트에 audio 를 broadcast 하기 위해 매체 connection 목록 유지
+_media_clients: set[WebSocket] = set()
+
+
+@app.websocket("/ws/media")
+async def websocket_media_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    _media_clients.add(websocket)
+    logger.info(f"[/ws/media] 시니어 프론트 연결 (총 {len(_media_clients)}개)")
+
+    try:
+        while True:
+            msg = await websocket.receive()
+            if msg.get("type") == "websocket.disconnect":
+                break
+            data = msg.get("bytes")
+            if not data or len(data) < 2:
+                continue
+            mtype = data[0]
+            payload = data[1:]
+
+            if mtype == MEDIA_TYPE_VIDEO:
+                # 태블릿 카메라 frame → detector.latest_frame 에 set
+                detector.latest_frame = bytes(payload)
+            elif mtype == MEDIA_TYPE_AUDIO_IN:
+                # 태블릿 마이크 PCM chunk → voice_agent 입력 (Phase 3 에서 처리)
+                if detector.voice_agent and hasattr(detector.voice_agent, 'feed_audio_chunk'):
+                    try:
+                        detector.voice_agent.feed_audio_chunk(bytes(payload))
+                    except Exception as e:
+                        logger.debug(f"[/ws/media] audio chunk feed 실패: {e}")
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.warning(f"[/ws/media] 예외: {e}")
+    finally:
+        _media_clients.discard(websocket)
+        logger.info(f"[/ws/media] 시니어 프론트 연결 해제 (남은 {len(_media_clients)}개)")
+
+
+async def broadcast_audio_to_seniors(audio_bytes: bytes):
+    """TTS 결과 audio (mp3 bytes) 를 시니어 프론트들에게 broadcast (Phase 2)."""
+    if not _media_clients:
+        return
+    payload = bytes([MEDIA_TYPE_AUDIO_OUT]) + audio_bytes
+    for client in list(_media_clients):
+        try:
+            await client.send_bytes(payload)
+        except Exception as e:
+            logger.debug(f"[broadcast_audio] client 전송 실패: {e}")
         logger.info(f"WebSocket 해제 (총 {len(detector.clients)}개)")
 
 
