@@ -1,0 +1,32 @@
+[
+  {
+    "id": "med_8d79d73b",
+    "name": "Test",
+    "time": "15:58",
+    "dosage": "Test",
+    "notes": "Test",
+    "stock": 2,
+    "enabled": true,
+    "created_at": "2026-05-11T15:57:45.569946"
+  },
+  {
+    "id": "med_0d7e9349",
+    "name": "ㅌㅌㅌ",
+    "time": "17:15",
+    "dosage": "ㄴㄷ",
+    "notes": "ㄴㅇㅇ",
+    "stock": 74,
+    "enabled": true,
+    "created_at": "2026-05-11T17:14:18.207428"
+  },
+  {
+    "id": "med_51b90f93",
+    "name": "ㄱㄱ",
+    "time": "17:17",
+    "dosage": "ㄴㅇ",
+    "notes": "ㄴㅇ",
+    "stock": 44,
+    "enabled": true,
+    "created_at": "2026-05-11T17:16:53.174963"
+  }
+]

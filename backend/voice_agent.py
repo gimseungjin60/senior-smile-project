@@ -205,22 +205,26 @@ class VoiceAgent:
             print(f"[VoiceAgent] 세션 저장 실패: {e}")
 
     def _match_and_log_medication(self):
-        """현재 시각과 가장 가까운 처방(±2시간)에 매핑하여 medication_logs에 기록합니다.
-
-        실패해도 기존 pill_taken 흐름은 유지되므로 try/except로 감쌉니다.
+        """Firestore medications/{deviceId}/items에서 처방을 읽어 현재 시각과 매핑하고
+        medication_logs에 기록합니다. stock 차감은 Firestore 트랜잭션으로 처리.
         """
         try:
-            import json, datetime
-            from pathlib import Path
+            import datetime
+            from google.cloud.firestore_v1 import transforms
+
             now = datetime.datetime.now()
             now_min = now.hour * 60 + now.minute
+            device_id = config.DEVICE_ID
 
-            meds_file = Path(__file__).parent / "medications.json"
             meds = []
-            if meds_file.exists():
-                meds = json.loads(meds_file.read_text(encoding="utf-8"))
+            if self.db:
+                items_ref = self.db.collection("medications").document(device_id).collection("items")
+                for doc in items_ref.get():
+                    data = doc.to_dict()
+                    data["id"] = doc.id
+                    meds.append(data)
 
-            # ±2시간 (120분) 이내에서 가장 가까운 enabled 처방 찾기
+            # ±2시간(120분) 이내 가장 가까운 enabled 처방
             best = None
             best_gap = 121
             for m in meds:
@@ -240,10 +244,11 @@ class VoiceAgent:
                     best = m
 
             log = {
-                "device_id": config.DEVICE_ID,
+                "device_id": device_id,
+                "deviceId": device_id,
                 "med_id": best["id"] if best else None,
                 "med_name": best["name"] if best else None,
-                "slot": best["time"] if best else None,
+                "slot": best.get("time") if best else None,
                 "taken_at": now.isoformat(),
                 "date": now.strftime("%Y-%m-%d"),
                 "source": "voice",
@@ -252,22 +257,28 @@ class VoiceAgent:
                 self.db.collection("medication_logs").add(log)
                 print(f"[VoiceAgent] medication_logs 기록: {log['med_name'] or '(미매칭)'} @ {log['slot'] or '-'}")
 
-            # 매칭 성공 시 stock 차감 (시연 안정성을 위해 별도 try)
-            if best is not None:
+            # 매칭 성공 시 Firestore 트랜잭션으로 stock 차감
+            if best is not None and self.db:
                 try:
-                    current_stock = int(best.get("stock", 0) or 0)
-                    if current_stock > 0:
-                        for m in meds:
-                            if m.get("id") == best["id"]:
-                                m["stock"] = current_stock - 1
-                                break
-                        meds_file.write_text(
-                            json.dumps(meds, ensure_ascii=False, indent=2),
-                            encoding="utf-8",
-                        )
-                        print(f"[VoiceAgent] {best['name']} 잔량 차감: {current_stock} → {current_stock - 1}")
+                    item_ref = (self.db.collection("medications")
+                                .document(device_id)
+                                .collection("items")
+                                .document(best["id"]))
+
+                    @self.db.transaction()
+                    def _decrement(tx, ref):
+                        snap = ref.get(transaction=tx)
+                        if not snap.exists:
+                            return
+                        current = int(snap.get("stock") or 0)
+                        if current > 0:
+                            tx.update(ref, {"stock": current - 1})
+                            print(f"[VoiceAgent] {best['name']} 잔량: {current} → {current - 1}")
+
+                    _decrement(item_ref)
                 except Exception as e:
                     print(f"[VoiceAgent] 잔량 차감 실패: {e}")
+
             return log
         except Exception as e:
             print(f"[VoiceAgent] medication_logs 기록 실패: {e}")
@@ -449,6 +460,16 @@ class VoiceAgent:
             print("[VoiceAgent] 약 복용 확인됨!")
             self.is_pill_taken = True
             self._match_and_log_medication()
+            # Firestore devices/{deviceId}.lastPillTakenAt 업데이트 → 모바일 isPillTaken 실시간 반영
+            if self.db:
+                try:
+                    import datetime as _dt
+                    self.db.collection("devices").document(config.DEVICE_ID).set(
+                        {"lastPillTakenAt": _dt.datetime.now(tz=_dt.timezone.utc)},
+                        merge=True,
+                    )
+                except Exception as _e:
+                    print(f"[VoiceAgent] lastPillTakenAt 업데이트 실패: {_e}")
             response_text = "아이고 잘하셨니더! 우리 할매 최고다!"
             self.play_sound("pill_praise.mp3", fallback_text=response_text)
             advice_text = "할머니, 약 드셨으니까 속 편하시게 시원한 물 한 잔 꼭 같이 드세요!"

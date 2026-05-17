@@ -111,7 +111,7 @@ class VisionEngine:
         print("[GAME] MediaPipe Hands + Pose 초기화 완료 (complexity=0)")
 
     def is_ready(self) -> bool:
-        return self.hands is not None and self.pose is not None
+        return getattr(self, "hands", None) is not None and getattr(self, "pose", None) is not None
 
     # ─────────────────────────────────────────────────────────
     # 손동작 분류 (가위바위보)
