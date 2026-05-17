@@ -1,0 +1,68 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // 헬퍼: 로그인 여부
+    function isAuthed() {
+      return request.auth != null;
+    }
+
+    // 헬퍼: 해당 deviceId에 페어링된 사용자인지 확인
+    // pairedDeviceIds 는 단순 string 배열이라 hasAny 매칭이 안정적.
+    function isPairedTo(deviceId) {
+      let user = get(/databases/$(database)/documents/users/$(request.auth.uid));
+      return user.data.get('pairedDeviceIds', []).hasAny([deviceId]);
+    }
+
+    // 사용자 문서: 본인만 읽기/쓰기
+    match /users/{uid} {
+      allow read, write: if isAuthed() && request.auth.uid == uid;
+    }
+
+    // 기기 문서: 페어링된 사용자만 읽기
+    // 페어링된 사용자는 카메라 시청 요청 시그널 필드만 update 가능 (LiveKit on-demand publisher)
+    match /devices/{deviceId} {
+      allow read: if isAuthed() && isPairedTo(deviceId);
+      allow update: if isAuthed() && isPairedTo(deviceId)
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                       .hasOnly(['cameraRequested', 'cameraRequestedAt']);
+      allow create, delete: if false;
+    }
+
+    // 복약 (medications/{deviceId}/items/{medId})
+    match /medications/{deviceId}/items/{medId} {
+      allow read, write: if isAuthed() && isPairedTo(deviceId);
+    }
+
+    // 페어링 요청: 클라이언트 직접 접근 완전 차단 (Cloud Function admin SDK만 접근)
+    match /pairing_requests/{code} {
+      allow read, write: if false;
+    }
+
+    // 사진: 로그인한 사용자 모두 읽기, 페어링된 사용자만 쓰기
+    match /photos/{photoId} {
+      allow read: if isAuthed();
+      allow create: if isAuthed();
+      allow update: if isAuthed() && resource.data.uploaderUid == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // 알림: 페어링된 사용자만 읽기
+    match /notifications/{notifId} {
+      allow read: if isAuthed() && isPairedTo(resource.data.device_id);
+      allow write: if false;
+    }
+
+    // 이벤트: 로그인한 사용자 읽기/쓰기
+    match /events/{eventId} {
+      allow read, write: if isAuthed();
+    }
+
+    // 약 복용 로그: 페어링된 사용자만 읽기
+    match /medication_logs/{logId} {
+      allow read: if isAuthed() && isPairedTo(resource.data.deviceId);
+      allow write: if false;
+    }
+  }
+}
