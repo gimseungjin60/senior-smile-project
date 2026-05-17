@@ -23,3 +23,7 @@ python-dotenv>=1.0.0
 PyAudio>=0.2.14
 PyJWT>=2.8.0
 bcrypt>=4.0.0
+# LiveKit publisher (LTE 환경 실시간 영상)
+# livekit (rtc) 와 livekit-api 는 별도 PyPI 패키지. 1.x 기준.
+livekit>=1.1.0
+livekit-api>=1.0.0
