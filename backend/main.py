@@ -23,10 +23,22 @@ logger = logging.getLogger(__name__)
 
 import datetime
 import config
+
+# Firebase Admin 초기화 — 다른 모듈보다 먼저 실행되어야 함
+import firebase_admin
+from firebase_admin import credentials as fb_credentials
+from pathlib import Path as _Path
+_key_path = _Path(__file__).parent / "serviceAccountKey.json"
+if not firebase_admin._apps and _key_path.exists():
+    firebase_admin.initialize_app(fb_credentials.Certificate(str(_key_path)))
+
 from voice_agent import VoiceAgent
 from notification import NotificationManager
 from pairing import PairingManager
 from auth import signup, login, verify_token, get_user
+from firestore_listener import FirestorePairingListener
+from devices_listener import DevicesListener
+from livekit_publisher import LiveKitPublisher
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # AI-bum 백엔드 연동 — 시연 환경에 따라 .env에서 오버라이드 가능
@@ -338,7 +350,7 @@ class FaceDetector:
             logger.warning(f"이벤트 전송 실패 (무시): {e}")
 
     async def _send_heartbeat(self):
-        """AI-bum 백엔드로 하트비트 전송"""
+        """AI-bum 백엔드로 하트비트 전송 + Firestore devices/{deviceId}.lastSeen 갱신"""
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 await client.post(f"{AIBUM_BACKEND_URL}/api/heartbeat", json={
@@ -347,6 +359,19 @@ class FaceDetector:
                 })
         except Exception:
             pass
+
+        try:
+            from firebase_admin import firestore as _fs
+            db = _fs.client()
+            db.collection("devices").document(DEVICE_ID).set(
+                {
+                    "lastSeen": _fs.SERVER_TIMESTAMP,
+                    "currentStatus": self.current_status,
+                },
+                merge=True,
+            )
+        except Exception as e:
+            logger.warning(f"[heartbeat] Firestore 갱신 실패: {e}")
 
     async def _heartbeat_loop(self):
         """60초마다 하트비트 전송"""
@@ -402,31 +427,60 @@ class FaceDetector:
         return False
 
     async def run_detection_loop(self):
-        if not self._open_camera():
-            return
-
-        logger.info("얼굴 감지 시작...")
+        """페어링된 상태일 때만 카메라 열고 얼굴 감지. 미페어링이면 카메라 닫고 대기."""
         self.running = True
         loop = asyncio.get_event_loop()
         consecutive_failures = 0
-        MAX_FAILURES = 30  # 연속 실패 시 카메라 재연결
+        MAX_FAILURES = 30
 
         try:
             while self.running:
+                # 미페어링 상태 — 카메라 + voice agent 다 닫고 대기 (사생활 보호 + 자원 절약)
+                if not self.pairing.is_paired:
+                    if self.camera is not None:
+                        try:
+                            self.camera.release()
+                        except Exception:
+                            pass
+                        self.camera = None
+                        self.latest_frame = None
+                        logger.info("[Camera] 미페어링 — 카메라 해제")
+                    # voice agent 가 살아있다면 종료 (이중 안전망)
+                    try:
+                        with self._voice_lock:
+                            if self.voice_agent and getattr(self.voice_agent, 'is_running', False):
+                                self.voice_agent.stop_conversation()
+                                logger.info("[Camera] 미페어링 — voice_agent 종료")
+                    except Exception as e:
+                        logger.warning(f"[Camera] voice_agent 종료 실패: {e}")
+                    if self.current_status != "idle":
+                        await self._transition("idle")
+                    await asyncio.sleep(1)
+                    continue
+
+                # 페어링 됨 — 카메라 안 열려있으면 열기
+                if self.camera is None:
+                    if not self._open_camera():
+                        await asyncio.sleep(5)
+                        continue
+                    logger.info("[Camera] 페어링 완료 — 카메라 시작")
+                    consecutive_failures = 0
+
                 ret, frame = await loop.run_in_executor(None, self.camera.read)
                 if not ret:
                     consecutive_failures += 1
                     if consecutive_failures >= MAX_FAILURES:
                         logger.warning(f"카메라 프레임 {MAX_FAILURES}회 연속 실패. 재연결 시도...")
-                        # 현재 active 상태면 idle로 복귀
                         if self.current_status != "idle":
                             await self._transition("idle")
-                        if self._open_camera():
-                            consecutive_failures = 0
-                            logger.info("카메라 재연결 성공")
-                        else:
-                            logger.error("카메라 재연결 실패. 5초 후 재시도...")
-                            await asyncio.sleep(5)
+                        try:
+                            if self.camera:
+                                self.camera.release()
+                        except Exception:
+                            pass
+                        self.camera = None  # 다음 loop iteration에서 다시 열림
+                        consecutive_failures = 0
+                        await asyncio.sleep(1)
                     else:
                         await asyncio.sleep(0.5)
                     continue
@@ -440,7 +494,6 @@ class FaceDetector:
 
                 now = time.time()
 
-                # 얼굴 감지 상태를 voice_agent에 전달 (마이크 게이팅)
                 if self.voice_agent:
                     self.voice_agent.face_detected = face_found
 
@@ -449,7 +502,10 @@ class FaceDetector:
                 await asyncio.sleep(config.FRAME_INTERVAL)
         finally:
             if self.camera:
-                self.camera.release()
+                try:
+                    self.camera.release()
+                except Exception:
+                    pass
                 logger.info("카메라 해제")
 
     async def _update_state(self, face_found: bool, now: float):
@@ -491,7 +547,96 @@ class FaceDetector:
 detector = FaceDetector()
 scheduler = BackgroundScheduler()
 
+
+def _on_pairing_completed(device_id: str, uid: str):
+    """Cloud Function이 PIN을 claim하면 Firestore 리스너가 이 콜백을 호출"""
+    loop = getattr(detector, '_loop', None)
+    if loop:
+        async def _broadcast():
+            for client in list(detector.clients):
+                try:
+                    await client.send_json({"type": "pairing_completed", "deviceId": device_id, "uid": uid})
+                except Exception:
+                    pass
+        asyncio.run_coroutine_threadsafe(_broadcast(), loop)
+
+
+_pairing_listener = FirestorePairingListener(
+    pairing_manager=detector.pairing,
+    on_paired=_on_pairing_completed,
+)
+
+
+def _on_device_paired(device_id: str):
+    """devices/{deviceId}.pairedUids 가 채워지면 호출 → 프론트에 페어링 완료 broadcast"""
+    loop = getattr(detector, '_loop', None)
+    if not loop:
+        return
+
+    async def _broadcast():
+        pairing_status = detector.pairing.get_status()
+        n_clients = len(detector.clients)
+        logger.info(f"[_on_device_paired] WS broadcast → {n_clients}개 client, payload={pairing_status}")
+        for client in list(detector.clients):
+            try:
+                await client.send_json({"type": "pairing", "pairing": pairing_status})
+            except Exception as e:
+                logger.warning(f"[_on_device_paired] client broadcast 실패: {e}")
+    asyncio.run_coroutine_threadsafe(_broadcast(), loop)
+
+
+def _on_device_unpaired(device_id: str):
+    """devices/{deviceId}.pairedUids 가 비면 호출 → voice_agent 종료 + 프론트에 페어링 해제 broadcast"""
+    # 마이크 ON 상태로 살아있는 voice agent 즉시 종료
+    try:
+        with detector._voice_lock:
+            if detector.voice_agent and getattr(detector.voice_agent, 'is_running', False):
+                detector.voice_agent.stop_conversation()
+                logger.info("[unpair] voice_agent 강제 종료")
+    except Exception as e:
+        logger.warning(f"[unpair] voice_agent 종료 실패: {e}")
+
+    loop = getattr(detector, '_loop', None)
+    if not loop:
+        logger.warning("[_on_device_unpaired] _loop 없음 — broadcast 불가")
+        return
+
+    async def _broadcast():
+        pairing_status = detector.pairing.get_status()
+        n_clients = len(detector.clients)
+        logger.info(f"[_on_device_unpaired] WS broadcast → {n_clients}개 client, payload={pairing_status}")
+        # 시니어 프론트(App.jsx)가 기대하는 키는 'pairing' (payload 아님)
+        for client in list(detector.clients):
+            try:
+                await client.send_json({"type": "pairing", "pairing": pairing_status})
+            except Exception as e:
+                logger.warning(f"[_on_device_unpaired] client broadcast 실패: {e}")
+    asyncio.run_coroutine_threadsafe(_broadcast(), loop)
+
+
+_livekit_publisher = LiveKitPublisher(detector)
+
+
+def _on_camera_requested(requested: bool):
+    """보호자 앱이 카메라 토글을 켜고/끄면 LiveKit publisher enable/disable"""
+    loop = getattr(detector, '_loop', None)
+    if not loop:
+        return
+    coro = _livekit_publisher.enable() if requested else _livekit_publisher.disable()
+    asyncio.run_coroutine_threadsafe(coro, loop)
+
+
+_devices_listener = DevicesListener(
+    pairing_manager=detector.pairing,
+    on_unpaired=_on_device_unpaired,
+    on_paired=_on_device_paired,
+    on_camera_requested=_on_camera_requested,
+)
+
 def scheduled_pill_reminder():
+    if not detector.pairing.is_paired:
+        logger.info("[Reminder] 미페어링 — pill 알림 무시")
+        return
     logger.info("스케줄러 훅: 복약 시간 도달")
     # 프론트엔드에 리마인더 화면 표시
     try:
@@ -525,6 +670,8 @@ def scheduled_pill_reminder():
 
 def _check_pill_missed():
     """복약 알림 후 10분 경과, 미복용 시 보호자 알림"""
+    if not detector.pairing.is_paired:
+        return
     with detector._voice_lock:
         if detector.voice_agent and detector.voice_agent.is_pill_taken:
             logger.info("복약 확인 완료. 미복용 알림 불필요.")
@@ -538,7 +685,9 @@ def _events_tick():
     오늘 일정이 있으면 갤탭 ReminderScreen에 띄운다.
 
     실패해도 다른 스케줄에 영향 없도록 try/except로 감싼다.
-    """
+    미페어링 상태에선 알림 안 띄움."""
+    if not detector.pairing.is_paired:
+        return
     try:
         import firebase_admin as fa
         if not fa._apps:
@@ -578,16 +727,36 @@ def _events_tick():
         logger.warning(f"[events_tick] 처리 실패: {e}")
 
 
-def _medication_tick():
-    """매 분 0초에 실행 — medications.json의 enabled 처방 시간이 현재와 일치하면
-    프론트엔드 ReminderScreen을 띄우고 보호자 푸시도 발송한다.
+def _get_medications_from_firestore() -> list:
+    """Firestore medications/{deviceId}/items에서 약 목록을 읽어 반환합니다."""
+    try:
+        import firebase_admin as fa
+        if not fa._apps:
+            return []
+        from firebase_admin import firestore as fs
+        db = fs.client()
+        items = db.collection("medications").document(DEVICE_ID).collection("items").get()
+        result = []
+        for doc in items:
+            data = doc.to_dict()
+            data["id"] = doc.id
+            result.append(data)
+        return result
+    except Exception as e:
+        logger.warning(f"[medication] Firestore 읽기 실패: {e}")
+        return []
 
-    실패해도 다른 스케줄에 영향 없도록 try/except로 감싼다.
+
+def _medication_tick():
+    if not detector.pairing.is_paired:
+        return
+    """매 분 0초에 실행 — Firestore medications/{deviceId}/items의 enabled 처방 시간이
+    현재와 일치하면 ReminderScreen + 음성 알림 + 보호자 푸시를 발송한다.
     """
     try:
         now = datetime.datetime.now()
         current_hm = now.strftime("%H:%M")
-        meds = _load_medications()
+        meds = _get_medications_from_firestore()
         for m in meds:
             if not m.get("enabled", True):
                 continue
@@ -639,7 +808,9 @@ def _medication_tick():
 
 
 def scheduled_routine(routine_type: str, message: str):
-    """일일 루틴 스케줄러에 의해 호출됩니다."""
+    """일일 루틴 스케줄러에 의해 호출됩니다. 미페어링 시 무시."""
+    if not detector.pairing.is_paired:
+        return
     if routine_type == "pill":
         return  # 기존 복약 스케줄러 사용
     logger.info(f"[루틴] {routine_type}: {message}")
@@ -691,9 +862,16 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     logger.info(f"스케줄러 시작 완료 (알람: {config.PILL_TIME}, 루틴: {len(config.DAILY_ROUTINES)}개)")
 
+    _pairing_listener.start()
+    _devices_listener.start()
+    await _livekit_publisher.start()
+
     detection_task = asyncio.create_task(detector.run_detection_loop())
     heartbeat_task = asyncio.create_task(detector._heartbeat_loop())
     yield
+    await _livekit_publisher.stop()
+    _devices_listener.stop()
+    _pairing_listener.stop()
     detector.stop()
     detection_task.cancel()
     heartbeat_task.cancel()
@@ -1036,11 +1214,8 @@ async def get_weather():
         return _weather_cache["data"]
 
     if not config.WEATHER_API_KEY:
-        return {
-            "temperature": "--",
-            "condition": "API 키 없음",
-            "icon": "❓",
-        }
+        # 키 없으면 null 반환 → 시니어/모바일 둘 다 날씨 카드 자체를 숨김
+        return None
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
