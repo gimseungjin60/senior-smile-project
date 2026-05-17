@@ -72,10 +72,20 @@ function App() {
           return
         }
 
-        if (data.type === 'pairing') {
-          if (data.pairing) setPairing(data.pairing)
-          return
+        // pairing 키가 들어오면 (type==='pairing' 이든 초기 메시지든) 동일값 가드로 update
+        if (data.pairing) {
+          setPairing((prev) => {
+            const next = data.pairing
+            if (prev
+                && prev.is_paired === next.is_paired
+                && prev.pairing_code === next.pairing_code
+                && prev.device_id === next.device_id) {
+              return prev  // 동일 reference 유지 → 불필요한 re-render 방지
+            }
+            return next
+          })
         }
+        if (data.type === 'pairing') return
 
         if (data.type === 'voice') {
           setSubtitle(data.subtitle || '')
@@ -95,7 +105,7 @@ function App() {
         if (data.isListening !== undefined) setIsListening(data.isListening || false)
         if (data.isPillTaken !== undefined) setIsPillTaken(data.isPillTaken || false)
         if (data.isConversationActive !== undefined) setIsConversationActive(data.isConversationActive || false)
-        if (data.pairing) setPairing(data.pairing)
+        // pairing 키는 위의 동일값 가드 setPairing 에서 이미 처리됨 (catch-all 불필요).
       }
       ws.onclose = () => {
         setConnected(false)
@@ -140,7 +150,9 @@ function App() {
   }
 
   function renderBaseContent() {
-    if (visibleStatus === 'idle') return <IdleScreen pairing={pairing} />
+    // 페어링 안 됐거나 연결 중이거나 idle 이면 IdleScreen 단일 분기 (React reconciliation 보장)
+    const showIdle = !pairing || pairing.is_paired !== true || visibleStatus === 'idle'
+    if (showIdle) return <IdleScreen pairing={pairing} />
     if (visibleStatus === 'greeting') return <GreetScreen />
     return <ActiveScreen newPhotoUrl={newPhotoUrl} />
   }

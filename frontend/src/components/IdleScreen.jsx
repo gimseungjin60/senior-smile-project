@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { seniorHttpUrl } from '../utils/host'
 import './IdleScreen.css'
 
@@ -68,15 +68,22 @@ function IdleScreen({ pairing }) {
     return () => clearInterval(timer)
   }, [])
 
-  // 페어링 코드 요청
+  // 페어링 코드 요청 — in-flight 가드로 중복 호출 방지
+  const inFlight = useRef(false)
   const requestCode = useCallback(async () => {
+    if (inFlight.current) return
+    inFlight.current = true
     try {
       const res = await fetch(`${BACKEND_API}/api/pairing/code`, { method: 'POST' })
       const data = await res.json()
-      setPairingCode(data.code)
-      setCodeRemaining(data.expires_in)
+      if (data?.code) {
+        setPairingCode(data.code)
+        setCodeRemaining(data.expires_in ?? 300)
+      }
     } catch {
       console.warn('[Pairing] 코드 요청 실패')
+    } finally {
+      inFlight.current = false
     }
   }, [])
 
@@ -95,18 +102,17 @@ function IdleScreen({ pairing }) {
     return () => clearInterval(timer)
   }, [pairingCode])
 
-  // 미페어링 + 코드 없으면 자동 생성
+  // 미페어링 + 코드 없으면 자동 생성. pairingCode 변화에도 반응(코드 만료 후 재발급).
   const isPairedVal = pairing?.is_paired
   useEffect(() => {
-    if (isPairedVal === false && !pairingCode && codeRemaining <= 0) {
+    if (isPairedVal === false && !pairingCode) {
       requestCode()
     }
-    // 페어링 완료 시 PIN 상태 즉시 초기화
     if (isPairedVal === true) {
       setPairingCode(null)
       setCodeRemaining(0)
     }
-  }, [isPairedVal]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isPairedVal, pairingCode, requestCode])
 
   const isPaired = pairing?.is_paired === true
   const isConnecting = pairing == null
@@ -153,14 +159,14 @@ function IdleScreen({ pairing }) {
             )}
             <p className="pairing-device-id">기기 ID: {pairing?.device_id || '—'}</p>
           </div>
-        ) : (
+        ) : weather && weather.temperature && weather.temperature !== '--' ? (
           <div className="idle-weather-card">
             <span className="weather-icon">{weather.icon}</span>
             <span className="weather-temp">{weather.temperature}</span>
             <span className="weather-divider" />
             <span className="weather-condition">{weather.condition}</span>
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   )
