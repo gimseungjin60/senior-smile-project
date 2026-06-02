@@ -1,11 +1,11 @@
 import os
 import time
+import queue
+import tempfile
 import threading
 import collections
 from pathlib import Path
-import speech_recognition as sr
 from openai import OpenAI
-import pygame
 import config
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -16,7 +16,6 @@ class VoiceAgent:
         if not config.OPENAI_API_KEY or config.OPENAI_API_KEY.startswith("여기에"):
             print("[VoiceAgent] ⚠️ OpenAI API 키가 설정되지 않았습니다. .env 파일을 확인하세요.")
         self.openai_client = OpenAI(api_key=config.OPENAI_API_KEY)
-        self.recognizer = sr.Recognizer()
         self.is_pill_taken = False
         self.is_running = False
         self.is_listening = False
@@ -85,19 +84,17 @@ class VoiceAgent:
         # TTS 임시 파일 경로 (절대경로)
         self.temp_voice_path = str(config.SOUNDS_DIR / "temp_voice.mp3")
 
-        # 음성 인식 에너지 임계값
-        # 노인 음성 + 일반 USB 마이크 게인 조합에서 1500은 너무 높아 트리거 실패함.
-        # 기본값으로 시작하고 dynamic이 환경에 맞춰 자동 조정하도록 위임.
-        self.recognizer.energy_threshold = 300
-        self.recognizer.dynamic_energy_threshold = True
-        self.recognizer.dynamic_energy_adjustment_damping = 0.15
-        self.recognizer.dynamic_energy_ratio = 1.5  # 배경 대비 1.5배 이상이면 음성으로 인식
-        self.recognizer.pause_threshold = 0.8  # 발화 종료 판단 (말 사이 공백)
-        self.recognizer.phrase_threshold = 0.3  # 최소 발화 길이
+        # ── 오디오 I/O (클라우드: 브라우저가 마이크/스피커 담당, transport-agnostic) ──
+        # main.py의 /ws/voice 핸들러가 아래를 주입·구동한다. 발화 무음 종료 등 VAD는 클라(vad-web).
+        # 인바운드: 브라우저 VAD가 끊은 발화 webm bytes 큐
+        self.audio_in: queue.Queue = queue.Queue()
+        # 아웃바운드: 클라에 {type:'speak',url}/{type:'beep'} 전송 콜백 (main.py 주입)
+        self.audio_out = None
+        # half-duplex(§2.5): 재생 중 True → 인입 오디오 드롭(서버측 최종 안전망)
+        self.is_speaking = False
+        # 클라 재생 완료(playback_done) 신호 — _play_and_wait가 이걸로 대기
+        self.playback_done = threading.Event()
 
-        # Pygame 믹서 초기화 (음성 재생용)
-        pygame.mixer.init()
-        
         # Firebase 연동
         self.db = None
         try:
@@ -210,7 +207,6 @@ class VoiceAgent:
         """
         try:
             import datetime
-            from google.cloud.firestore_v1 import transforms
 
             now = datetime.datetime.now()
             now_min = now.hour * 60 + now.minute
@@ -317,20 +313,13 @@ class VoiceAgent:
         sender = msg.get("sender", "보호자")
         self._activate_conversation()
         self.speak(f"{sender}님이 음성 메시지를 보내셨어요! 들어보세요.")
-        audio_path = config.VOICE_MSG_DIR / msg.get("filename", "")
-        if audio_path.exists():
-            try:
-                self.current_subtitle = "음성 메시지 재생 중..."
-                pygame.mixer.music.load(str(audio_path))
-                pygame.mixer.music.play()
-                while pygame.mixer.music.get_busy():
-                    time.sleep(0.1)
-                try:
-                    pygame.mixer.music.unload()
-                except AttributeError:
-                    pass
-            except Exception as e:
-                print(f"[VoiceAgent] 음성 메시지 재생 실패: {e}")
+        filename = msg.get("filename", "")
+        audio_path = config.VOICE_MSG_DIR / filename
+        if filename and audio_path.exists():
+            self.current_subtitle = "음성 메시지 재생 중..."
+            self._play_and_wait(
+                {"type": "speak", "url": f"/voice-msg/{filename}"}, timeout_sec=30.0,
+            )
             self.current_subtitle = ""
         # 메타데이터 played 갱신
         import json
@@ -340,7 +329,7 @@ class VoiceAgent:
             meta["played"] = True
             meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
 
-    def _handle_user_input(self, user_text: str, source):
+    def _handle_user_input(self, user_text: str):
         """사용자 발화를 처리합니다. (대화 모드에서 호출)"""
         self._last_interaction_time = time.time()
         self.chat_history.append(f"사용자: {user_text}")
@@ -408,7 +397,7 @@ class VoiceAgent:
         ]
         if any(kw in user_text for kw in reply_keywords):
             self.speak("네! 지금부터 녹음할게요. 말씀해주세요!")
-            self._record_reply(source)
+            self._record_reply()
             return
 
         # 긴급 상황 (항상 감지 — 대화 모드 아니어도)
@@ -495,117 +484,88 @@ class VoiceAgent:
             self.chat_history.append(f"AI: {response_text}")
 
     def _run_loop(self):
-        """메인 루프: 호출어 대기 → 대화 모드 → 타임아웃 → 대기 복귀"""
-        print("[VoiceAgent] 시작 (호출어: '앨범아')")
+        """메인 루프: 브라우저 발화 큐 소비 → 호출어 대기 → 대화 모드 → 타임아웃 → 대기 복귀.
+        (클라우드: 서버 마이크 없음. 입력은 audio_in 큐, 출력은 audio_out 콜백.)"""
+        print("[VoiceAgent] 시작 (호출어: '앨범아') — 브라우저 오디오 입력")
         self.play_sound("greet_home.mp3", fallback_text="할머니, 저 왔어요. '앨범아' 하고 불러주세요!")
 
-        mic_retry_count = 0
-        MAX_MIC_RETRIES = 5
-
-        while self.is_running and mic_retry_count < MAX_MIC_RETRIES:
+        while self.is_running:
             try:
-                with sr.Microphone() as source:
-                    print("[VoiceAgent] 환경 소음 측정 중... (2초간 조용히 해주세요)")
-                    self.recognizer.adjust_for_ambient_noise(source, duration=2.0)
-                    mic_retry_count = 0
-                    print(f"[VoiceAgent] 마이크 연결 성공 → 호출어 대기 중... (energy_threshold={self.recognizer.energy_threshold:.1f})")
+                # 외부 모듈(게임/스트레칭)이 자원 점유 중이면 대기
+                if not self.is_active:
+                    self.is_listening = False
+                    self.is_conversation_active = False
+                    time.sleep(0.3)
+                    continue
 
-                    while self.is_running:
-                        # 외부 모듈(게임/스트레칭)이 자원 점유 중이면 대기
-                        if not self.is_active:
-                            self.is_listening = False
-                            self.is_conversation_active = False
-                            time.sleep(0.3)
-                            continue
-                        # 얼굴 미감지 시 마이크 정지
-                        if not self.face_detected:
-                            self.is_listening = False
-                            self.is_conversation_active = False
-                            time.sleep(0.3)
-                            continue
+                # 보호자 음성 메시지 (대화 모드 무관하게 재생)
+                if self.pending_voice_msg:
+                    msg = self.pending_voice_msg
+                    self.pending_voice_msg = None
+                    self._play_voice_message(msg)
 
-                        # 보호자 음성 메시지 (대화 모드 무관하게 재생)
-                        if self.pending_voice_msg:
-                            msg = self.pending_voice_msg
-                            self.pending_voice_msg = None
-                            self._play_voice_message(msg)
+                # 사진 알림 (대화 모드 무관하게 알림)
+                if self.pending_photo_url and not self.is_asking_photo:
+                    self.is_asking_photo = True
+                    self._activate_conversation()
+                    prompt = "방금 보호자가 사진을 보냈어. 어르신께 알려드리고 '볼까요?' 물어봐줘."
+                    response_text = self.get_openai_response(prompt)
+                    self.speak(response_text)
+                    self.chat_history.append(f"AI: {response_text}")
 
-                        # 사진 알림 (대화 모드 무관하게 알림)
-                        if self.pending_photo_url and not self.is_asking_photo:
-                            self.is_asking_photo = True
-                            self._activate_conversation()
-                            prompt = "방금 보호자가 사진을 보냈어. 어르신께 알려드리고 '볼까요?' 물어봐줘."
-                            response_text = self.get_openai_response(prompt)
-                            self.speak(response_text)
-                            self.chat_history.append(f"AI: {response_text}")
+                # 대화 모드 타임아웃 체크
+                self._check_conversation_timeout()
 
-                        # 대화 모드 타임아웃 체크
-                        self._check_conversation_timeout()
+                # === 음성 입력 (브라우저 발화 큐) ===
+                user_text = self.listen()
+                if not user_text:
+                    continue
 
-                        # === 음성 입력 ===
-                        user_text = self.listen(source)
-                        if not user_text:
-                            continue
+                print(f"[사용자] {user_text}")
 
-                        print(f"[사용자] {user_text}")
+                # --- 긴급 상황은 호출어 없이도 항상 감지 ---
+                if any(kw in user_text for kw in self._emergency_keywords):
+                    self._activate_conversation()
+                    self._handle_user_input(user_text)
+                    continue
 
-                        # --- 긴급 상황은 호출어 없이도 항상 감지 ---
-                        if any(kw in user_text for kw in self._emergency_keywords):
-                            self._activate_conversation()
-                            self._handle_user_input(user_text, source)
-                            continue
+                # --- 호출어 대기 모드 ---
+                if not self.is_conversation_active:
+                    if self._is_wake_word(user_text):
+                        self._activate_conversation()
+                        self._play_beep()
+                        self.current_subtitle = "네, 말씀하세요!"
+                        self.speak("네, 말씀하세요!")
+                        # 호출어와 함께 말한 내용이 있으면 처리
+                        remaining = user_text
+                        for w in self._wake_words:
+                            remaining = remaining.replace(w, "").strip()
+                        if remaining:
+                            self._handle_user_input(remaining)
+                    else:
+                        # 호출어 아님 → 무시 (TV 소리 등)
+                        continue
+                else:
+                    # --- 대화 모드 ---
+                    self._handle_user_input(user_text)
 
-                        # --- 호출어 대기 모드 ---
-                        if not self.is_conversation_active:
-                            if self._is_wake_word(user_text):
-                                self._activate_conversation()
-                                self._play_beep()
-                                self.current_subtitle = "네, 말씀하세요!"
-                                self.speak("네, 말씀하세요!")
-                                # 호출어와 함께 말한 내용이 있으면 처리
-                                remaining = user_text
-                                for w in self._wake_words:
-                                    remaining = remaining.replace(w, "").strip()
-                                if remaining:
-                                    self._handle_user_input(remaining, source)
-                            else:
-                                # 호출어 아님 → 무시 (TV 소리 등)
-                                continue
-                        else:
-                            # --- 대화 모드 ---
-                            self._handle_user_input(user_text, source)
+                time.sleep(0.3)
 
-                        time.sleep(0.3)
-
-            except OSError as e:
-                mic_retry_count += 1
-                self.is_listening = False
-                self.current_subtitle = "마이크 연결을 확인하고 있어요..."
-                print(f"[VoiceAgent] 마이크 에러 ({mic_retry_count}/{MAX_MIC_RETRIES}): {e}")
-                time.sleep(3)
-                self.current_subtitle = ""
             except Exception as e:
-                mic_retry_count += 1
                 self.is_listening = False
-                print(f"[VoiceAgent] 예상치 못한 에러 ({mic_retry_count}/{MAX_MIC_RETRIES}): {e}")
-                time.sleep(3)
-
-        if mic_retry_count >= MAX_MIC_RETRIES:
-            self.current_subtitle = "마이크를 찾을 수 없어요. 연결을 확인해 주세요."
-            print(f"[VoiceAgent] 마이크 재연결 {MAX_MIC_RETRIES}회 실패. 음성 기능 중단.")
-            time.sleep(5)
-            self.current_subtitle = ""
+                print(f"[VoiceAgent] 루프 에러: {e}")
+                time.sleep(1)
 
         print("[VoiceAgent] 대화 모드 종료")
 
-    def _transcribe_audio(self, audio) -> str:
-        """녹음된 오디오를 OpenAI Whisper API로 변환합니다."""
-        import tempfile
+    def _transcribe_audio(self, audio_bytes: bytes, fmt: str = "wav") -> str:
+        """브라우저에서 받은 오디오 bytes를 OpenAI Whisper API로 변환합니다."""
+        if not audio_bytes:
+            return ""
         tmp_path = None
         try:
-            wav_data = audio.get_wav_data()
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                tmp.write(wav_data)
+            with tempfile.NamedTemporaryFile(suffix=f".{fmt}", delete=False) as tmp:
+                tmp.write(audio_bytes)
                 tmp_path = tmp.name
 
             with open(tmp_path, "rb") as audio_file:
@@ -625,38 +585,33 @@ class VoiceAgent:
                 except OSError:
                     pass
 
-    def listen(self, source) -> str:
-        # 외부에서 pause된 상태면 마이크 점유하지 않고 즉시 반환.
-        # 게임/스트레칭 WebSocket이 자원을 쓸 때 마이크 충돌 방지.
+    def listen(self) -> str:
+        """브라우저 발화 큐(audio_in)에서 다음 발화를 꺼내 Whisper로 인식.
+        pause 상태면 즉시 반환. half-duplex: 재생 중 새어든 프레임은 드롭."""
         if not self.is_active:
             self.is_listening = False
             return ""
 
         self.is_listening = True
         self.current_user_text = ""
-        print("[VOICE] 마이크 ON — 듣는 중")
-        while self.is_running and self.is_active:
-            try:
-                audio = self.recognizer.listen(source, timeout=1.0, phrase_time_limit=10.0)
-                # 디버그: 포착된 오디오 길이로 너무 짧으면 인식 실패 가능성 높음
-                audio_sec = len(audio.frame_data) / (audio.sample_rate * audio.sample_width)
-                print(f"[VoiceAgent] 소리 포착됨 ({audio_sec:.2f}초), Whisper 인식 중... ☁️")
-                text = self._transcribe_audio(audio)
-                self.is_listening = False
-                if text:
-                    self.current_user_text = text
-                    return text
-                else:
-                    print(f"[VoiceAgent] ⚠️ Whisper가 빈 텍스트 반환 (오디오 {audio_sec:.2f}초). 음성이 너무 작거나 짧을 수 있음.")
-                    return ""
-            except sr.WaitTimeoutError:
-                continue
-            except Exception as e:
-                print(f"[VoiceAgent] 음성 인식 중 에러 발생: {e}")
-                self.is_listening = False
-                return ""
+        try:
+            audio_bytes = self.audio_in.get(timeout=1.0)
+        except queue.Empty:
+            self.is_listening = False
+            return ""
 
+        # 재생 중 들어온 발화는 에코 위험 → 드롭 (클라 정지 실패 대비 서버측 최종 안전망)
+        if self.is_speaking or not self.is_active:
+            self.is_listening = False
+            return ""
+
+        print(f"[VoiceAgent] 발화 수신 ({len(audio_bytes)}B), Whisper 인식 중... ☁️")
+        text = self._transcribe_audio(audio_bytes)
         self.is_listening = False
+        if text:
+            self.current_user_text = text
+            return text
+        print("[VoiceAgent] ⚠️ Whisper 빈 텍스트 (음성이 너무 작거나 짧음)")
         return ""
 
     def get_openai_response(self, text: str) -> str:
@@ -678,48 +633,37 @@ class VoiceAgent:
             print(f"[VoiceAgent] OpenAI Chat API 에러: {e}")
             return "잠시만요~ 인터넷이 좀 아픈가 봐요! 다시 말해줄래? 웅!"
 
-    def _stop_mixer_safely(self):
-        """진행 중인 재생을 안전하게 중지 — 새 재생 시작 전 충돌 방지용."""
-        try:
-            if pygame.mixer.music.get_busy():
-                pygame.mixer.music.stop()
-                time.sleep(0.05)  # 디바이스 자원 해제 대기
-        except Exception:
-            pass
+    def _emit(self, payload: dict):
+        """클라이언트로 제어 메시지 송신. audio_out 미주입(예: 단독 실행)이면 무시."""
+        if self.audio_out:
+            try:
+                self.audio_out(payload)
+            except Exception as e:
+                print(f"[VoiceAgent] audio_out 송신 실패: {e}")
 
-    def _wait_until_done(self, timeout_sec: float = 30.0):
-        """재생 완료 / 외부 pause / 타임아웃까지 대기. 게임 시작 시 즉시 중단."""
-        start = time.time()
-        try:
-            while pygame.mixer.music.get_busy():
-                if not self.is_active:
-                    pygame.mixer.music.stop()
-                    break
-                if time.time() - start > timeout_sec:
-                    pygame.mixer.music.stop()
-                    break
-                time.sleep(0.05)
-        except Exception:
-            pass
+    def _play_and_wait(self, payload: dict, timeout_sec: float):
+        """half-duplex 재생(§2.5): 클라에 재생 지시 → playback_done 대기.
+        대기 동안 is_speaking=True → listen()이 인입 오디오를 드롭(에코 방지)."""
+        if not self.is_active:
+            return
+        self.is_speaking = True
+        self.playback_done.clear()
+        self._emit(payload)
+        # 클라 재생 완료 / pause / 타임아웃까지 대기 (pause()는 playback_done.set()으로 깨움)
+        if not self.playback_done.wait(timeout=timeout_sec):
+            print(f"[VoiceAgent] playback_done 타임아웃({timeout_sec}s) — 강제 진행")
+        self.is_speaking = False
 
     def _play_beep(self):
-        """대화 전 알림음을 재생합니다."""
+        """대화 전 알림음 — 클라이언트가 /sounds/beep.wav 재생."""
         if not self.is_active:
             return
-        beep_path = config.SOUNDS_DIR / "beep.wav"
-        if beep_path.exists():
-            try:
-                self._stop_mixer_safely()
-                pygame.mixer.music.load(str(beep_path))
-                pygame.mixer.music.play()
-                self._wait_until_done(timeout_sec=2.0)
-            except Exception:
-                pass
+        self._play_and_wait({"type": "beep", "url": "/sounds/beep.wav"}, timeout_sec=3.0)
 
     def speak(self, text: str):
+        """TTS(mp3) 생성 후 클라이언트가 /tts/latest 로 가져가 재생하도록 지시."""
         if not self.is_active:
             return
-        self._play_beep()
         self.current_subtitle = text
         try:
             response = self.openai_client.audio.speech.create(
@@ -729,70 +673,57 @@ class VoiceAgent:
                 speed=1.05
             )
             response.stream_to_file(self.temp_voice_path)
-
-            self._stop_mixer_safely()
-            pygame.mixer.music.load(self.temp_voice_path)
-            pygame.mixer.music.play()
-            self._wait_until_done(timeout_sec=20.0)
-
-            try:
-                pygame.mixer.music.unload()
-            except AttributeError:
-                pass
-
+            # ts 캐시버스터 — 클라는 url + '?ts=' 로 요청해 직전 mp3 캐시 회피
+            self._play_and_wait(
+                {"type": "speak", "url": "/tts/latest", "ts": time.time()},
+                timeout_sec=20.0,
+            )
         except Exception as e:
             print(f"[VOICE] TTS 에러: {e}")
         finally:
             self.current_subtitle = ""
-            # AI 발화 직후 에코 방지 대기
-            time.sleep(0.5)
 
     def play_sound(self, filename: str, fallback_text: str):
-        """준비된 MP3 파일을 우선 재생하고, 파일이 없으면 TTS로 대체(Fallback)합니다."""
+        """준비된 MP3를 클라이언트가 /sounds/{filename}로 재생. 파일 없으면 TTS로 대체."""
         if not self.is_active:
             return
         filepath = config.SOUNDS_DIR / filename
         self.current_subtitle = fallback_text
         if filepath.exists():
-            self._play_beep()
-            try:
-                self._stop_mixer_safely()
-                pygame.mixer.music.load(str(filepath))
-                pygame.mixer.music.play()
-                self._wait_until_done(timeout_sec=15.0)
-                try:
-                    pygame.mixer.music.unload()
-                except AttributeError:
-                    pass
-            except Exception as e:
-                print(f"[VOICE] MP3 재생 에러({filename}): {e}")
-                self.speak(fallback_text)
+            self._play_and_wait(
+                {"type": "speak", "url": f"/sounds/{filename}"}, timeout_sec=15.0,
+            )
             self.current_subtitle = ""
         else:
             print(f"[VOICE] '{filename}' 미존재 — TTS로 대체")
-            self.speak(fallback_text) # 이 안에서 current_subtitle이 초기화됨
+            self.speak(fallback_text)  # 이 안에서 current_subtitle이 초기화됨
 
-    def _record_reply(self, source):
-        """어르신의 답장 음성을 녹음합니다."""
-        import uuid, json, wave
+    def _record_reply(self):
+        """어르신의 답장 음성을 받아 저장 (브라우저 발화 큐에서 다음 발화 1건)."""
+        import uuid, json
         self.is_listening = True
         self.current_subtitle = "녹음 중... 말씀해주세요"
         print("[VoiceAgent] 답장 녹음 시작")
+
         try:
-            audio = self.recognizer.listen(source, timeout=3, phrase_time_limit=15)
+            audio_bytes = self.audio_in.get(timeout=15.0)
+        except queue.Empty:
             self.is_listening = False
+            self.speak("음성이 안 들렸어요. 다시 해볼까요?")
+            self.current_subtitle = ""
+            return
+        self.is_listening = False
 
+        try:
             # STT로 텍스트도 추출 (OpenAI Whisper)
-            text = self._transcribe_audio(audio)
+            text = self._transcribe_audio(audio_bytes)
 
-            # WAV로 저장
+            # 원본 오디오(wav, vad-web encodeWAV) 저장
             msg_id = f"reply_{uuid.uuid4().hex[:8]}"
             filename = f"{msg_id}.wav"
             filepath = config.VOICE_MSG_DIR / filename
-
-            wav_data = audio.get_wav_data()
             with open(filepath, "wb") as f:
-                f.write(wav_data)
+                f.write(audio_bytes)
 
             # 메타데이터 저장
             import datetime
@@ -814,11 +745,7 @@ class VoiceAgent:
                 self.notifier.notify_voice_reply(text)
 
             print(f"[VoiceAgent] 답장 저장 완료: {msg_id}")
-        except sr.WaitTimeoutError:
-            self.is_listening = False
-            self.speak("음성이 안 들렸어요. 다시 해볼까요?")
         except Exception as e:
-            self.is_listening = False
             print(f"[VoiceAgent] 답장 녹음 에러: {e}")
             self.speak("녹음 중 문제가 생겼어요. 다시 해볼게요!")
         self.current_subtitle = ""
@@ -835,19 +762,15 @@ class VoiceAgent:
     # 자원 점유 제어 (게임/스트레칭이 마이크/스피커 쓸 때 일시 정지)
     # ─────────────────────────────────────────────────────────
     def pause(self):
-        """마이크/대화 일시 정지. 진행 중인 listen은 1초 내에 빠져나감."""
+        """대화 일시 정지. 진행 중인 listen/재생 대기를 1초 내 해제."""
         if not self.is_active:
             return
         self.is_active = False
         self.is_listening = False
         self.is_conversation_active = False
-        # 진행 중인 TTS/효과음도 중단하여 게임 사운드와 충돌 방지
-        try:
-            if pygame.mixer.music.get_busy():
-                pygame.mixer.music.stop()
-        except Exception:
-            pass
-        print("[VOICE] 일시 정지 (외부 모듈이 마이크/스피커 자원 점유)")
+        # 진행 중인 _play_and_wait 를 깨워 게임/스트레칭 화면 전환을 막지 않음
+        self.playback_done.set()
+        print("[VOICE] 일시 정지 (외부 모듈이 화면/오디오 점유)")
 
     def resume(self):
         """일시 정지 해제. 호출어 대기 모드로 복귀."""
@@ -856,7 +779,7 @@ class VoiceAgent:
         self.is_active = True
         print("[VOICE] 재개 — 호출어 대기 모드로 복귀")
 
-# 단독 실행 테스트용
+# 단독 실행 테스트용 (클라우드: audio_in/audio_out 미주입 시 입력 없음 — main.py /ws/voice 로 구동)
 if __name__ == "__main__":
     agent = VoiceAgent()
     agent.start_conversation()

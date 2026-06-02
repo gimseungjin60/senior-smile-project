@@ -33,6 +33,8 @@ if not firebase_admin._apps and _key_path.exists():
     firebase_admin.initialize_app(fb_credentials.Certificate(str(_key_path)))
 
 from voice_agent import VoiceAgent
+import audio_transport                       # /ws/voice 전송 격리 (binary↔base64)
+from voice_socket import VoiceSocketBridge   # 스레드↔async 브리지 격리
 from notification import NotificationManager
 from pairing import PairingManager
 from auth import signup, login, verify_token, get_user
@@ -80,6 +82,8 @@ class FaceDetector:
         # 음성 대화 에이전트 인스턴스
         self.voice_agent: Optional[VoiceAgent] = None
         self._voice_lock = threading.Lock()
+        # 스레드↔async 브리지: voice_agent(스레드) ↔ /ws/voice(async). 브라우저 오디오 I/O.
+        self.voice_bridge = VoiceSocketBridge()
 
         # 페어링 + 푸시 알림 매니저
         self.pairing = PairingManager()
@@ -410,6 +414,8 @@ class FaceDetector:
                 if self.voice_agent is None:
                     self.voice_agent = VoiceAgent()
                     self.voice_agent.notifier = self.notifier
+                # 브라우저 오디오 I/O 배선 (audio_out → /ws/voice)
+                self.voice_bridge.bind_agent(self.voice_agent)
                 self.voice_agent.start_conversation()
             elif new_status == "idle":
                 if self.voice_agent is not None:
@@ -494,8 +500,9 @@ class FaceDetector:
 
                 now = time.time()
 
-                if self.voice_agent:
-                    self.voice_agent.face_detected = face_found
+                # 얼굴 기반 마이크 게이팅 제거(2026-06-02): 마이크는 브라우저(갤탭)에 있고
+                # 대화 세션은 idle↔greeting↔active 상태머신이 start/stop_conversation으로 제어.
+                # 카메라 face_found는 화면 상태전환·LiveKit용으로만 사용.
 
                 await self._update_state(face_found, now)
                 await self.broadcast_voice_state()
@@ -920,9 +927,72 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.info(f"WebSocket 해제 (총 {len(detector.clients)}개)")
 
 
+@app.websocket("/ws/voice")
+async def ws_voice(websocket: WebSocket):
+    """
+    브라우저(갤탭) 마이크 ↔ 서버 음성 파이프라인 양방향 WS. (docs/voice-cloud-refactor-design.md §3)
+    - 인바운드 오디오: VAD로 끊은 발화(binary, audio_transport가 추출) → voice_agent.audio_in
+    - 인바운드 제어: {type:'control', action:'playback_done'} → half-duplex 재생 대기 해제
+    - 아웃바운드: voice_agent가 audio_out으로 {type:'speak'|'beep', url} 송신 (voice_socket 브리지)
+    단일 연결: 새 연결 시 이전 연결 닫고 큐 리셋(§2.5).
+    """
+    await websocket.accept()
+    loop = asyncio.get_running_loop()
+    await detector.voice_bridge.attach(websocket, loop)
+    logger.info("[voice] /ws/voice 연결")
+    try:
+        while True:
+            msg = await websocket.receive()
+            if msg.get("type") == "websocket.disconnect":
+                break
+            audio = audio_transport.extract_audio(msg)
+            if audio is not None:
+                detector.voice_bridge.feed_audio(audio)
+                continue
+            ctrl = audio_transport.parse_control(msg)
+            if ctrl and ctrl.get("action") == "playback_done":
+                detector.voice_bridge.signal_playback_done()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        detector.voice_bridge.detach(websocket)
+        logger.info("[voice] /ws/voice 해제")
+
+
+@app.get("/tts/latest")
+async def tts_latest():
+    """voice_agent.speak()가 생성한 최신 TTS mp3. 클라는 ?ts= 캐시버스터로 요청."""
+    p = config.SOUNDS_DIR / "temp_voice.mp3"
+    if not p.exists():
+        return Response(status_code=404)
+    return FileResponse(str(p), media_type="audio/mpeg")
+
+
+@app.get("/sounds/{filename}")
+async def serve_sound(filename: str):
+    """효과음/준비된 멘트(beep.wav, pill_praise.mp3 등) 서빙. 경로 traversal 방지."""
+    p = (config.SOUNDS_DIR / filename).resolve()
+    if p.parent != config.SOUNDS_DIR.resolve() or not p.exists():
+        return Response(status_code=404)
+    return FileResponse(str(p))
+
+
+@app.get("/voice-msg/{filename}")
+async def serve_voice_msg(filename: str):
+    """보호자→시니어 음성 메시지 파일 서빙. 경로 traversal 방지."""
+    p = (config.VOICE_MSG_DIR / filename).resolve()
+    if p.parent != config.VOICE_MSG_DIR.resolve() or not p.exists():
+        return Response(status_code=404)
+    return FileResponse(str(p))
+
+
 @app.websocket("/ws/vision")
 async def ws_vision(websocket: WebSocket):
     """
+    [DEPRECATED 2026-06-02] 비전이 클라이언트 MediaPipe Web(frontend/src/utils/vision.js)으로
+    이전됨. 시니어 웹클라이언트는 더 이상 이 엔드포인트/core.vision_engine 을 호출하지 않음.
+    클라우드 배포 시 mediapipe/opencv 의존성과 함께 제거 가능. (구 RPi 서버 비전 잔재)
+
     인지 게임(가위바위보 져주기) + 스트레칭 가이드용 비전 WebSocket.
 
     수신 메시지:
