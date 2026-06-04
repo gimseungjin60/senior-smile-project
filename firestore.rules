@@ -48,10 +48,11 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // 알림: 페어링된 사용자만 읽기
+    // 알림: 페어링된 사용자만 읽기, 로그인한 사용자 생성 가능
     match /notifications/{notifId} {
       allow read: if isAuthed() && isPairedTo(resource.data.device_id);
-      allow write: if false;
+      allow create: if isAuthed();
+      allow update, delete: if false;
     }
 
     // 이벤트: 로그인한 사용자 읽기/쓰기
@@ -61,7 +62,7 @@ service cloud.firestore {
 
     // 약 복용 로그: 페어링된 사용자만 읽기
     match /medication_logs/{logId} {
-      allow read: if isAuthed() && isPairedTo(resource.data.deviceId);
+      allow read: if isAuthed() && isPairedTo(resource.data.device_id);
       allow write: if false;
     }
   }

@@ -16,6 +16,12 @@ backend/.venv-*/
 frontend/node_modules/
 frontend/dist/
 
+# 빌드 산출물 (frontend vite build → backend/dist 로 복사됨, 커밋 안 함)
+backend/dist/
+
+# 사진 프록시 캐시 (런타임 생성)
+backend/photo_cache/
+
 # 보안 키/환경변수
 backend/.env
 backend/serviceAccountKey.json

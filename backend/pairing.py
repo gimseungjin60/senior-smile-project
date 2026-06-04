@@ -24,8 +24,8 @@ PAIRING_CODE_EXPIRY = 300  # 5분
 
 
 class PairingManager:
-    def __init__(self):
-        self.device_id = config.DEVICE_ID
+    def __init__(self, device_id: str = ""):
+        self.device_id = device_id or config.DEVICE_ID
         self.pairing_code: Optional[str] = None
         self.code_expires_at: float = 0
         self.is_paired = False
@@ -180,6 +180,7 @@ class PairingManager:
                     "device_id": self.device_id,   # legacy: 마지막 페어링
                     "fcm_token": fcm_token,
                     "role": "보호자",
+                    "pairedDeviceIds": firestore.ArrayUnion([self.device_id]),
                     "pairings": firestore.ArrayUnion([{
                         "family_id": self.family_id,
                         "device_id": self.device_id,

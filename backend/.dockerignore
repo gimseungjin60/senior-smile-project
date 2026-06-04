@@ -1,0 +1,16 @@
+__pycache__
+*.pyc
+*.pyo
+.env
+serviceAccountKey.json
+device_id.json
+users_local.json
+photos/
+photo_cache/
+voice_messages/
+*.log
+.DS_Store
+venv/
+venv-py314.bak/
+.venv/
+.venv-py314-bak/

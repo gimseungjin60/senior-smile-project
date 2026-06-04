@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
-import { aibumHttpUrl } from '../utils/host'
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { seniorHttpUrl } from '../utils/host'
+import { getDeviceId } from '../utils/deviceId'
 import './ActiveScreen.css'
 
 const DEFAULT_SLIDES = [
@@ -9,18 +10,25 @@ const DEFAULT_SLIDES = [
   { emoji: '🎵', message: '좋아하는 노래를 들으며 쉬어가세요' },
 ]
 
-// 보호자 백엔드(8001)를 시연 환경에서 안 돌려도 fetch 실패는 catch로 안전 처리됨 → 기본 슬라이드 표시
-const BACKEND_URL = aibumHttpUrl()
+const BACKEND_URL = seniorHttpUrl()
 const PHOTO_POLL_INTERVAL = 60000
 const SLIDE_INTERVAL = 8000
-const NEW_PHOTO_DISPLAY_TIME = 20000
 const CROSSFADE_MS = 700
+
+// 원격 사진(Firebase Storage http URL)은 백엔드 프록시 경유 → 아이폰 HEIC를 JPEG로 변환받음.
+// 백엔드 로컬 상대경로(/api/photos/...)는 그대로 사용.
+function imgSrc(uri) {
+  if (!uri) return uri
+  if (uri.startsWith('http')) {
+    return `${BACKEND_URL}/api/photo-proxy?url=${encodeURIComponent(uri)}`
+  }
+  return uri
+}
 
 function ActiveScreen({ newPhotoUrl }) {
   const [photos, setPhotos] = useState([])
   const [hasPhotos, setHasPhotos] = useState(false)
-  const [showNewPhoto, setShowNewPhoto] = useState(false)
-  const [displayedNewPhoto, setDisplayedNewPhoto] = useState(null)
+  const [loading, setLoading] = useState(true)  // 첫 사진 fetch 완료 전 로딩 표시
 
   const [curIdx, setCurIdx] = useState(0)
   const [prevIdx, setPrevIdx] = useState(null)
@@ -28,18 +36,36 @@ function ActiveScreen({ newPhotoUrl }) {
 
   const [slideIndex, setSlideIndex] = useState(0)
 
+  const pendingPhotoRef = useRef(null)
+  const curIdxRef = useRef(0)
+  curIdxRef.current = curIdx
+
+  // 새 사진 도착 → photos 배열에 추가
   useEffect(() => {
-    if (newPhotoUrl) {
-      setDisplayedNewPhoto(newPhotoUrl)
-      setShowNewPhoto(true)
-      const timer = setTimeout(() => setShowNewPhoto(false), NEW_PHOTO_DISPLAY_TIME)
-      return () => clearTimeout(timer)
-    }
+    if (!newPhotoUrl) return
+    pendingPhotoRef.current = newPhotoUrl
+    setPhotos((prev) => {
+      if (prev.some((p) => p.uri === newPhotoUrl)) return prev
+      return [...prev, { uri: newPhotoUrl, uploaderName: '가족', emoji: '📸', caption: '' }]
+    })
+    setHasPhotos(true)
   }, [newPhotoUrl])
+
+  // photos 배열 업데이트 후 pending 사진으로 바로 전환
+  useEffect(() => {
+    const url = pendingPhotoRef.current
+    if (!url) return
+    const idx = photos.findIndex((p) => p.uri === url)
+    if (idx === -1) return
+    pendingPhotoRef.current = null
+    setPrevIdx(curIdxRef.current)
+    setCrossfading(true)
+    setCurIdx(idx)
+  }, [photos])
 
   const fetchPhotos = useCallback(async () => {
     try {
-      const res = await fetch(`${BACKEND_URL}/api/photos?limit=20`)
+      const res = await fetch(`${BACKEND_URL}/api/photos?device_id=${getDeviceId()}&limit=20`)
       if (!res.ok) return
       const data = await res.json()
       if (data.photos?.length > 0) {
@@ -47,6 +73,7 @@ function ActiveScreen({ newPhotoUrl }) {
         setHasPhotos(true)
       }
     } catch { /* 기본 슬라이드 유지 */ }
+    finally { setLoading(false) }  // 성공/실패/0개 모두 로딩 종료
   }, [])
 
   useEffect(() => {
@@ -55,8 +82,17 @@ function ActiveScreen({ newPhotoUrl }) {
     return () => clearInterval(pollTimer)
   }, [fetchPhotos])
 
+  // 모든 사진을 백그라운드 프리로드 → 슬라이드 전환 시 즉시 표시 (이전 사진 잔류 방지)
   useEffect(() => {
-    if (!hasPhotos || showNewPhoto || photos.length <= 1) return
+    photos.forEach((p) => {
+      if (!p?.uri) return
+      const img = new Image()
+      img.src = imgSrc(p.uri)
+    })
+  }, [photos])
+
+  useEffect(() => {
+    if (!hasPhotos || photos.length <= 1) return
     const timer = setInterval(() => {
       setCurIdx((cur) => {
         const next = (cur + 1) % photos.length
@@ -66,7 +102,7 @@ function ActiveScreen({ newPhotoUrl }) {
       })
     }, SLIDE_INTERVAL)
     return () => clearInterval(timer)
-  }, [hasPhotos, showNewPhoto, photos.length])
+  }, [hasPhotos, photos.length])
 
   useEffect(() => {
     if (!crossfading) return
@@ -78,27 +114,12 @@ function ActiveScreen({ newPhotoUrl }) {
   }, [crossfading, curIdx])
 
   useEffect(() => {
-    if (hasPhotos || showNewPhoto) return
+    if (hasPhotos) return
     const timer = setInterval(() => {
       setSlideIndex((i) => (i + 1) % DEFAULT_SLIDES.length)
     }, SLIDE_INTERVAL)
     return () => clearInterval(timer)
-  }, [hasPhotos, showNewPhoto])
-
-  // 새 사진 도착
-  if (showNewPhoto && displayedNewPhoto) {
-    return (
-      <div className="active-screen">
-        <div className="new-photo-display">
-          <div className="new-photo-card">
-            <img className="photo-image" src={displayedNewPhoto} alt="새로 도착한 사진" />
-            <div className="new-photo-badge">새 사진이 도착했어요!</div>
-          </div>
-          <div className="new-photo-timer"><div className="new-photo-timer-bar" /></div>
-        </div>
-      </div>
-    )
-  }
+  }, [hasPhotos])
 
   // 사진 슬라이드쇼
   if (hasPhotos && photos.length > 0) {
@@ -110,14 +131,14 @@ function ActiveScreen({ newPhotoUrl }) {
           <div className="photo-card">
             {prevPhoto && (
               <div className="photo-layer" style={{ zIndex: 1 }}>
-                <img className="photo-image" src={prevPhoto.uri} alt="" aria-hidden="true" />
+                <img className="photo-image" src={imgSrc(prevPhoto.uri)} alt="" aria-hidden="true" />
               </div>
             )}
             <div
               className={`photo-layer ${crossfading ? 'photo-layer--entering' : ''}`}
               style={{ zIndex: 2 }}
             >
-              <img className="photo-image" src={photo.uri} alt={photo.caption || '가족 사진'} />
+              <img className="photo-image" src={imgSrc(photo.uri)} alt={photo.caption || '가족 사진'} />
             </div>
           </div>
           <div className="photo-info-bar">
@@ -131,6 +152,19 @@ function ActiveScreen({ newPhotoUrl }) {
               ))}
             </div>
           </div>
+        </div>
+      </div>
+    )
+  }
+
+  // 첫 사진 로딩 중 — dot 3개 애니메이션 (기본 슬라이드 깜빡임 방지)
+  if (loading) {
+    return (
+      <div className="active-screen">
+        <div className="photo-loading" role="status" aria-label="사진 불러오는 중">
+          <span className="loading-dot" />
+          <span className="loading-dot" />
+          <span className="loading-dot" />
         </div>
       </div>
     )

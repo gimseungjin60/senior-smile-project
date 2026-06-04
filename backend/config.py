@@ -14,6 +14,9 @@ load_dotenv(dotenv_path=env_path)
 _device_file = Path(__file__).parent / "device_id.json"
 
 def _get_or_create_device_id() -> str:
+    env_id = os.environ.get("DEVICE_ID", "")
+    if env_id:
+        return env_id
     if _device_file.exists():
         data = json.loads(_device_file.read_text(encoding="utf-8"))
         return data.get("device_id", "")
@@ -26,7 +29,7 @@ DEVICE_ID = _get_or_create_device_id()
 # ==========================================
 # 기본 설정
 # ==========================================
-CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX", 0))
+CAMERA_SOURCE = os.environ.get("CAMERA_SOURCE", "tablet").lower()
 FRAME_INTERVAL = 0.1          # ~10 FPS
 CORS_ORIGINS = ["*"]
 
@@ -38,7 +41,7 @@ DETECTION_CONFIRM_FRAMES = 3  # N프레임 연속 감지 후 세션 시작
 
 # 상태 전환 타이밍
 GREETING_DURATION = 5.0       # GREETING → ACTIVE 자동 전환 (초)
-ACTIVE_IDLE_TIMEOUT = 30.0    # ACTIVE에서 얼굴 미감지 후 IDLE 복귀 (초)
+ACTIVE_IDLE_TIMEOUT = 3600.0  # ACTIVE에서 얼굴 미감지 후 IDLE 복귀 (초, 1시간). 대화 중이면 무시됨
 
 # 모델 경로
 MODELS_DIR = Path(__file__).parent / "models"

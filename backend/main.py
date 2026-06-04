@@ -11,6 +11,14 @@ from typing import Optional
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
 
+# 아이폰 HEIC 사진을 PIL이 열 수 있게 등록 (Android Chrome은 HEIC 미지원 → JPEG 변환 필요)
+try:
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+    _HEIF_OK = True
+except Exception:
+    _HEIF_OK = False
+
 import cv2
 import httpx
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Query
@@ -28,26 +36,43 @@ import config
 import firebase_admin
 from firebase_admin import credentials as fb_credentials
 from pathlib import Path as _Path
-_key_path = _Path(__file__).parent / "serviceAccountKey.json"
-if not firebase_admin._apps and _key_path.exists():
-    firebase_admin.initialize_app(fb_credentials.Certificate(str(_key_path)))
+import base64, json as _json
+
+if not firebase_admin._apps:
+    _fb_key_b64 = os.environ.get("FIREBASE_KEY_B64", "")
+    _key_path = _Path(__file__).parent / "serviceAccountKey.json"
+    if _fb_key_b64:
+        _key_dict = _json.loads(base64.b64decode(_fb_key_b64).decode())
+        firebase_admin.initialize_app(fb_credentials.Certificate(_key_dict))
+    elif _key_path.exists():
+        firebase_admin.initialize_app(fb_credentials.Certificate(str(_key_path)))
 
 from voice_agent import VoiceAgent
+from voice_socket import VoiceSocketBridge
+import audio_transport
 from notification import NotificationManager
 from pairing import PairingManager
 from auth import signup, login, verify_token, get_user
 from firestore_listener import FirestorePairingListener
 from devices_listener import DevicesListener
+from photos_listener import PhotosListener
 from livekit_publisher import LiveKitPublisher
 from apscheduler.schedulers.background import BackgroundScheduler
 
-# AI-bum 백엔드 연동 — 시연 환경에 따라 .env에서 오버라이드 가능
-AIBUM_BACKEND_URL = os.environ.get("AIBUM_BACKEND_URL", "http://localhost:8001")
-DEVICE_ID = config.DEVICE_ID
+# AI-bum 백엔드 연동 — 클라우드 환경에서는 .env에 AIBUM_BACKEND_URL 설정
+AIBUM_BACKEND_URL = os.environ.get("AIBUM_BACKEND_URL", "")
+DEVICE_ID = config.DEVICE_ID  # 로컬/단일 기기 기본값
 HEARTBEAT_INTERVAL = 60
 
-# 카메라 입력 소스: "usb" (라즈베리파이의 cv2.VideoCapture) 또는 "tablet" (시니어 프론트 WebSocket)
-CAMERA_SOURCE = os.environ.get("CAMERA_SOURCE", "usb").lower()
+# 복약/일정 시각 비교 기준 시간대. 보호자 앱은 한국시간으로 등록하는데
+# 서버(Render)는 UTC라서, 명시적으로 KST로 변환해 비교해야 9시간 어긋남이 안 생긴다.
+KST = datetime.timezone(datetime.timedelta(hours=9))
+
+def _now_kst() -> datetime.datetime:
+    return datetime.datetime.now(KST)
+
+# 카메라 입력 소스: "tablet" (시니어 프론트 WebSocket) — 클라우드에는 카메라 없음
+CAMERA_SOURCE = config.CAMERA_SOURCE
 
 
 class FaceDetector:
@@ -60,12 +85,14 @@ class FaceDetector:
                 active 중 얼굴 다시 보여도 greeting으로 돌아가지 않음 (세션 유지).
     """
 
-    def __init__(self):
+    def __init__(self, device_id: str = ""):
+        self.device_id = device_id or config.DEVICE_ID
         self.net = cv2.dnn.readNetFromCaffe(config.PROTOTXT_PATH, config.MODEL_PATH)
         self.camera: Optional[cv2.VideoCapture] = None
         self.running = False
         self.current_status = "idle"
         self.clients: set[WebSocket] = set()
+        self.media_clients: set[WebSocket] = set()  # /ws/media/{device_id} 클라이언트
         self.latest_frame: Optional[bytes] = None
 
         # 연속 감지 스트릭 (idle → greeting 진입 확인용)
@@ -83,14 +110,16 @@ class FaceDetector:
         # 음성 대화 에이전트 인스턴스
         self.voice_agent: Optional[VoiceAgent] = None
         self._voice_lock = threading.Lock()
+        self.voice_bridge = VoiceSocketBridge()
 
         # 페어링 + 푸시 알림 매니저
-        self.pairing = PairingManager()
+        self.pairing = PairingManager(device_id=self.device_id)
         self.notifier = NotificationManager()
         self.notifier.pairing = self.pairing
 
         # UI 관련 상태
-        self.font_path = "C:/Windows/Fonts/malgun.ttf"
+        # 폰트 경로: Linux 클라우드 우선, 없으면 기본 폰트
+        self.font_path = "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"
         self.photos_dir = Path(__file__).parent / "photos"
         self.photos_dir.mkdir(exist_ok=True)
         self.photo_files = []
@@ -354,7 +383,7 @@ class FaceDetector:
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 await client.post(f"{AIBUM_BACKEND_URL}/api/events", json={
-                    "device_id": DEVICE_ID,
+                    "device_id": self.device_id,
                     "type": event_type,
                     **kwargs,
                 })
@@ -367,7 +396,7 @@ class FaceDetector:
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 await client.post(f"{AIBUM_BACKEND_URL}/api/heartbeat", json={
-                    "device_id": DEVICE_ID,
+                    "device_id": self.device_id,
                     "current_state": self.current_status,
                 })
         except Exception:
@@ -376,7 +405,7 @@ class FaceDetector:
         try:
             from firebase_admin import firestore as _fs
             db = _fs.client()
-            db.collection("devices").document(DEVICE_ID).set(
+            db.collection("devices").document(self.device_id).set(
                 {
                     "lastSeen": _fs.SERVER_TIMESTAMP,
                     "currentStatus": self.current_status,
@@ -417,16 +446,18 @@ class FaceDetector:
             await self._send_event("session_end", duration_seconds=duration, smile_count=0)
             self.notifier.notify_session_end(duration, emotion_report)
 
-        # 음성 에이전트 시작/종료 (스레드 안전)
-        with self._voice_lock:
-            if new_status == "greeting":
-                if self.voice_agent is None:
-                    self.voice_agent = VoiceAgent()
-                    self.voice_agent.notifier = self.notifier
-                self.voice_agent.start_conversation()
-            elif new_status == "idle":
-                if self.voice_agent is not None:
-                    self.voice_agent.stop_conversation()
+        # 음성 에이전트 시작/종료 (스레드 안전) — 실패해도 detection loop 죽지 않도록 보호
+        try:
+            with self._voice_lock:
+                if new_status == "greeting":
+                    if self.voice_agent is None:
+                        self.voice_agent = self._make_voice_agent()
+                    self.voice_agent.start_conversation()
+                elif new_status == "idle":
+                    if self.voice_agent is not None:
+                        self.voice_agent.stop_conversation()
+        except Exception as e:
+            logger.warning(f"[VoiceAgent] 초기화/시작 실패 (무시하고 계속): {e}")
 
     def _open_camera(self) -> bool:
         """카메라를 열고 성공 여부를 반환합니다."""
@@ -480,6 +511,9 @@ class FaceDetector:
                 if is_tablet:
                     # tablet 모드: latest_frame 은 /ws/media handler 가 외부에서 set
                     if self.latest_frame is None:
+                        # 프레임 없어도 시간 기반 상태 전환(greeting→active 등)은 계속 돌려야 함
+                        await self._update_state(False, time.time())
+                        await self.broadcast_voice_state()
                         await asyncio.sleep(0.2)
                         continue
                     arr = np.frombuffer(self.latest_frame, dtype=np.uint8)
@@ -566,9 +600,26 @@ class FaceDetector:
             if face_found:
                 self._last_seen = now
             else:
-                if self._last_seen and (now - self._last_seen) >= config.ACTIVE_IDLE_TIMEOUT:
+                # 대화/발화/청취 중이면 얼굴이 잠깐 안 잡혀도 idle로 가지 않음
+                # (태블릿 전면 카메라가 얼굴을 자주 놓쳐 대화 중 세션이 끊기는 문제 방지)
+                va = self.voice_agent
+                conversing = va is not None and (
+                    getattr(va, 'is_conversation_active', False)
+                    or getattr(va, 'is_speaking', False)
+                    or getattr(va, 'is_listening', False)
+                )
+                if conversing:
+                    self._last_seen = now
+                elif self._last_seen and (now - self._last_seen) >= config.ACTIVE_IDLE_TIMEOUT:
                     self._detect_streak = 0
                     await self._transition("idle")
+
+    def _make_voice_agent(self) -> "VoiceAgent":
+        """VoiceAgent 생성 + voice_bridge 배선. 모든 생성 지점에서 이 메서드를 사용한다."""
+        va = VoiceAgent(device_id=self.device_id)
+        va.notifier = self.notifier
+        self.voice_bridge.bind_agent(va)
+        return va
 
     def stop(self):
         self.running = False
@@ -576,100 +627,123 @@ class FaceDetector:
             self.voice_agent.stop_conversation()
 
 
-detector = FaceDetector()
+# per-device 상태 레지스트리
+_device_states: dict[str, "FaceDetector"] = {}
+_device_listeners: dict[str, tuple] = {}   # device_id → (DevicesListener, FirestorePairingListener, LiveKitPublisher)
+
 scheduler = BackgroundScheduler()
 
 
-def _on_pairing_completed(device_id: str, uid: str):
-    """FirestorePairingListener 가 PIN claim 감지 → 시니어 프론트에 페어링 완료 broadcast.
-    DevicesListener 의 _on_device_paired 와 동일한 형식 사용 (시니어 프론트가 type==='pairing' 만 처리)."""
-    loop = getattr(detector, '_loop', None)
+def _get_or_create_detector(device_id: str) -> "FaceDetector":
+    """device_id에 해당하는 FaceDetector를 반환. 없으면 생성 + per-device 리스너 시작."""
+    if device_id in _device_states:
+        return _device_states[device_id]
+
+    det = FaceDetector(device_id=device_id)
+    _device_states[device_id] = det
+
+    # per-device 콜백 팩토리 (클로저로 device_id 캡처)
+    def make_callbacks(d_id: str, d: "FaceDetector"):
+        def _pairing_completed(did: str, uid: str):
+            loop = getattr(d, '_loop', None)
+            if not loop:
+                return
+            async def _bc():
+                s = d.pairing.get_status()
+                for c in list(d.clients):
+                    try:
+                        await c.send_json({"type": "pairing", "pairing": s})
+                    except Exception:
+                        pass
+            asyncio.run_coroutine_threadsafe(_bc(), loop)
+
+        def _device_paired(did: str):
+            loop = getattr(d, '_loop', None)
+            if not loop:
+                return
+            async def _bc():
+                s = d.pairing.get_status()
+                for c in list(d.clients):
+                    try:
+                        await c.send_json({"type": "pairing", "pairing": s})
+                    except Exception:
+                        pass
+            asyncio.run_coroutine_threadsafe(_bc(), loop)
+
+        def _device_unpaired(did: str):
+            try:
+                with d._voice_lock:
+                    if d.voice_agent and getattr(d.voice_agent, 'is_running', False):
+                        d.voice_agent.stop_conversation()
+            except Exception as e:
+                logger.warning(f"[unpair] voice_agent 종료 실패: {e}")
+            loop = getattr(d, '_loop', None)
+            if not loop:
+                return
+            async def _bc():
+                s = d.pairing.get_status()
+                for c in list(d.clients):
+                    try:
+                        await c.send_json({"type": "pairing", "pairing": s})
+                    except Exception:
+                        pass
+            asyncio.run_coroutine_threadsafe(_bc(), loop)
+
+        lk = LiveKitPublisher(d)
+
+        def _camera_requested(requested: bool):
+            loop = getattr(d, '_loop', None)
+            if not loop:
+                return
+            coro = lk.enable() if requested else lk.disable()
+            asyncio.run_coroutine_threadsafe(coro, loop)
+
+        return _pairing_completed, _device_paired, _device_unpaired, _camera_requested, lk
+
+    cb_pairing, cb_paired, cb_unpaired, cb_camera, lk_pub = make_callbacks(device_id, det)
+
+    dev_listener = DevicesListener(
+        device_id=device_id,
+        pairing_manager=det.pairing,
+        on_unpaired=cb_unpaired,
+        on_paired=cb_paired,
+        on_camera_requested=cb_camera,
+    )
+    pair_listener = FirestorePairingListener(
+        pairing_manager=det.pairing,
+        on_paired=cb_pairing,
+        device_id=device_id,
+    )
+    _device_listeners[device_id] = (dev_listener, pair_listener, lk_pub)
+    dev_listener.start()
+    pair_listener.start()
+    logger.info(f"[DeviceRegistry] 새 기기 등록: {device_id}")
+    return det
+
+
+def _on_new_photo(device_id: str, uri: str):
+    """photos 리스너 콜백 — 해당 기기의 WS 클라이언트에 broadcast"""
+    det = _device_states.get(device_id)
+    if not det:
+        return
+    loop = getattr(det, '_loop', None)
     if not loop:
         return
 
     async def _broadcast():
-        pairing_status = detector.pairing.get_status()
-        n_clients = len(detector.clients)
-        logger.info(f"[_on_pairing_completed] WS broadcast → {n_clients}개 client, uid={uid}, payload={pairing_status}")
-        for client in list(detector.clients):
+        payload = {"newPhotoUrl": uri}
+        for client in list(det.clients):
             try:
-                await client.send_json({"type": "pairing", "pairing": pairing_status})
+                await client.send_json(payload)
             except Exception as e:
-                logger.warning(f"[_on_pairing_completed] client broadcast 실패: {e}")
+                logger.warning(f"[_on_new_photo] client broadcast 실패: {e}")
     asyncio.run_coroutine_threadsafe(_broadcast(), loop)
 
 
-_pairing_listener = FirestorePairingListener(
-    pairing_manager=detector.pairing,
-    on_paired=_on_pairing_completed,
-)
+_photos_listener = PhotosListener(on_new_photo=_on_new_photo)
 
-
-def _on_device_paired(device_id: str):
-    """devices/{deviceId}.pairedUids 가 채워지면 호출 → 프론트에 페어링 완료 broadcast"""
-    loop = getattr(detector, '_loop', None)
-    if not loop:
-        return
-
-    async def _broadcast():
-        pairing_status = detector.pairing.get_status()
-        n_clients = len(detector.clients)
-        logger.info(f"[_on_device_paired] WS broadcast → {n_clients}개 client, payload={pairing_status}")
-        for client in list(detector.clients):
-            try:
-                await client.send_json({"type": "pairing", "pairing": pairing_status})
-            except Exception as e:
-                logger.warning(f"[_on_device_paired] client broadcast 실패: {e}")
-    asyncio.run_coroutine_threadsafe(_broadcast(), loop)
-
-
-def _on_device_unpaired(device_id: str):
-    """devices/{deviceId}.pairedUids 가 비면 호출 → voice_agent 종료 + 프론트에 페어링 해제 broadcast"""
-    # 마이크 ON 상태로 살아있는 voice agent 즉시 종료
-    try:
-        with detector._voice_lock:
-            if detector.voice_agent and getattr(detector.voice_agent, 'is_running', False):
-                detector.voice_agent.stop_conversation()
-                logger.info("[unpair] voice_agent 강제 종료")
-    except Exception as e:
-        logger.warning(f"[unpair] voice_agent 종료 실패: {e}")
-
-    loop = getattr(detector, '_loop', None)
-    if not loop:
-        logger.warning("[_on_device_unpaired] _loop 없음 — broadcast 불가")
-        return
-
-    async def _broadcast():
-        pairing_status = detector.pairing.get_status()
-        n_clients = len(detector.clients)
-        logger.info(f"[_on_device_unpaired] WS broadcast → {n_clients}개 client, payload={pairing_status}")
-        # 시니어 프론트(App.jsx)가 기대하는 키는 'pairing' (payload 아님)
-        for client in list(detector.clients):
-            try:
-                await client.send_json({"type": "pairing", "pairing": pairing_status})
-            except Exception as e:
-                logger.warning(f"[_on_device_unpaired] client broadcast 실패: {e}")
-    asyncio.run_coroutine_threadsafe(_broadcast(), loop)
-
-
-_livekit_publisher = LiveKitPublisher(detector)
-
-
-def _on_camera_requested(requested: bool):
-    """보호자 앱이 카메라 토글을 켜고/끄면 LiveKit publisher enable/disable"""
-    loop = getattr(detector, '_loop', None)
-    if not loop:
-        return
-    coro = _livekit_publisher.enable() if requested else _livekit_publisher.disable()
-    asyncio.run_coroutine_threadsafe(coro, loop)
-
-
-_devices_listener = DevicesListener(
-    pairing_manager=detector.pairing,
-    on_unpaired=_on_device_unpaired,
-    on_paired=_on_device_paired,
-    on_camera_requested=_on_camera_requested,
-)
+# 기본 기기 detector — 스케줄러/리마인더 등 단일 기기 참조용
+detector = _get_or_create_detector(DEVICE_ID)
 
 def scheduled_pill_reminder():
     if not detector.pairing.is_paired:
@@ -689,8 +763,7 @@ def scheduled_pill_reminder():
 
     with detector._voice_lock:
         if detector.voice_agent is None:
-            detector.voice_agent = VoiceAgent()
-            detector.voice_agent.notifier = detector.notifier
+            detector.voice_agent = detector._make_voice_agent()
 
         if not detector.voice_agent.is_running and detector.current_status == "idle":
             detector.voice_agent.trigger_pill_reminder()
@@ -706,16 +779,17 @@ def scheduled_pill_reminder():
             scheduler.add_job(scheduled_pill_reminder, 'date', run_date=run_date, id="pill_retry", replace_existing=True)
 
 
-def _check_pill_missed():
+def _check_pill_missed(device_id: str = ""):
     """복약 알림 후 10분 경과, 미복용 시 보호자 알림"""
-    if not detector.pairing.is_paired:
+    det = _device_states.get(device_id) if device_id else detector
+    if not det or not det.pairing.is_paired:
         return
-    with detector._voice_lock:
-        if detector.voice_agent and detector.voice_agent.is_pill_taken:
+    with det._voice_lock:
+        if det.voice_agent and det.voice_agent.is_pill_taken:
             logger.info("복약 확인 완료. 미복용 알림 불필요.")
             return
     logger.info("복약 미확인. 보호자에게 푸시 알림 전송.")
-    detector.notifier.notify_pill_missed()
+    det.notifier.notify_pill_missed()
 
 
 def _events_tick():
@@ -732,7 +806,7 @@ def _events_tick():
             return
         from firebase_admin import firestore as fs
         db = fs.client()
-        now = datetime.datetime.now()
+        now = _now_kst()  # 일정도 한국시간 기준
         today_str = now.strftime("%Y-%m-%d")
         current_hm = now.strftime("%H:%M")
 
@@ -765,15 +839,15 @@ def _events_tick():
         logger.warning(f"[events_tick] 처리 실패: {e}")
 
 
-def _get_medications_from_firestore() -> list:
-    """Firestore medications/{deviceId}/items에서 약 목록을 읽어 반환합니다."""
+def _get_medications_from_firestore(device_id: str) -> list:
+    """Firestore medications/{device_id}/items에서 약 목록을 읽어 반환합니다."""
     try:
         import firebase_admin as fa
         if not fa._apps:
             return []
         from firebase_admin import firestore as fs
         db = fs.client()
-        items = db.collection("medications").document(DEVICE_ID).collection("items").get()
+        items = db.collection("medications").document(device_id).collection("items").get()
         result = []
         for doc in items:
             data = doc.to_dict()
@@ -786,63 +860,68 @@ def _get_medications_from_firestore() -> list:
 
 
 def _medication_tick():
-    if not detector.pairing.is_paired:
-        return
-    """매 분 0초에 실행 — Firestore medications/{deviceId}/items의 enabled 처방 시간이
-    현재와 일치하면 ReminderScreen + 음성 알림 + 보호자 푸시를 발송한다.
+    """매 분 0초 — 페어링된 모든 기기의 medications/{deviceId}/items를 검사하여
+    enabled 처방 시간이 현재와 일치하면 해당 기기에 ReminderScreen + 음성 알림을 발송한다.
+
+    스케줄러는 단일 기기가 아니라 _device_states에 등록된 모든 기기를 순회한다
+    (태블릿은 브라우저 device_id(frame-xxxx)로 연결되므로 전역 detector와 별개).
     """
-    try:
-        now = datetime.datetime.now()
-        current_hm = now.strftime("%H:%M")
-        meds = _get_medications_from_firestore()
-        for m in meds:
-            if not m.get("enabled", True):
-                continue
-            if m.get("time") != current_hm:
-                continue
+    now = _now_kst()  # 보호자가 등록한 약 시간은 한국시간 기준
+    current_hm = now.strftime("%H:%M")
+    for device_id, det in list(_device_states.items()):
+        if not det.pairing.is_paired:
+            continue
+        try:
+            meds = _get_medications_from_firestore(device_id)
+            for m in meds:
+                if not m.get("enabled", True):
+                    continue
+                if m.get("time") != current_hm:
+                    continue
 
-            name = m.get("name", "약")
-            title = f"{name} 드실 시간이에요!"
-            message = (
-                f"{m.get('dosage', '')} {m.get('notes', '')}".strip()
-                or "잊지 말고 꼭 챙겨 드세요!"
-            )
-
-            # 프론트엔드(갤탭) ReminderScreen 표시
-            try:
-                loop = getattr(detector, '_loop', None)
-                if loop:
-                    asyncio.run_coroutine_threadsafe(
-                        detector.broadcast_reminder("pill", message, title=title),
-                        loop
-                    )
-            except Exception as e:
-                logger.warning(f"[medication_tick] 프론트 브로드캐스트 실패: {e}")
-
-            # 음성 발화 (대화 중이 아닐 때만)
-            try:
-                with detector._voice_lock:
-                    if detector.voice_agent is None:
-                        detector.voice_agent = VoiceAgent()
-                        detector.voice_agent.notifier = detector.notifier
-                    if not detector.voice_agent.is_running and detector.current_status == "idle":
-                        detector.voice_agent.trigger_pill_reminder()
-            except Exception as e:
-                logger.warning(f"[medication_tick] 음성 발화 실패: {e}")
-
-            # 10분 후 미복용 체크 예약
-            try:
-                check_date = now + datetime.timedelta(minutes=10)
-                scheduler.add_job(
-                    _check_pill_missed, 'date', run_date=check_date,
-                    id=f"pill_check_{m.get('id', current_hm)}", replace_existing=True,
+                name = m.get("name", "약")
+                title = f"{name} 드실 시간이에요!"
+                message = (
+                    f"{m.get('dosage', '')} {m.get('notes', '')}".strip()
+                    or "잊지 말고 꼭 챙겨 드세요!"
                 )
-            except Exception as e:
-                logger.warning(f"[medication_tick] 미복용 체크 예약 실패: {e}")
 
-            logger.info(f"[medication_tick] 리마인더 발송: {name} @ {current_hm}")
-    except Exception as e:
-        logger.warning(f"[medication_tick] 처리 실패: {e}")
+                # 프론트엔드(갤탭) ReminderScreen 표시
+                try:
+                    loop = getattr(det, '_loop', None)
+                    if loop:
+                        asyncio.run_coroutine_threadsafe(
+                            det.broadcast_reminder("pill", message, title=title),
+                            loop
+                        )
+                except Exception as e:
+                    logger.warning(f"[medication_tick] 프론트 브로드캐스트 실패: {e}")
+
+                # 음성 발화 (대화 중이 아닐 때만)
+                try:
+                    with det._voice_lock:
+                        if det.voice_agent is None:
+                            det.voice_agent = det._make_voice_agent()
+                        if not det.voice_agent.is_running and det.current_status == "idle":
+                            det.voice_agent.trigger_pill_reminder()
+                except Exception as e:
+                    logger.warning(f"[medication_tick] 음성 발화 실패: {e}")
+
+                # 10분 후 미복용 체크 예약
+                try:
+                    check_date = now + datetime.timedelta(minutes=10)
+                    scheduler.add_job(
+                        _check_pill_missed, 'date', run_date=check_date,
+                        args=[device_id],
+                        id=f"pill_check_{device_id}_{m.get('id', current_hm)}",
+                        replace_existing=True,
+                    )
+                except Exception as e:
+                    logger.warning(f"[medication_tick] 미복용 체크 예약 실패: {e}")
+
+                logger.info(f"[medication_tick] 리마인더 발송: {name} @ {current_hm} ({device_id})")
+        except Exception as e:
+            logger.warning(f"[medication_tick] {device_id} 처리 실패: {e}")
 
 
 def scheduled_routine(routine_type: str, message: str):
@@ -865,21 +944,21 @@ def scheduled_routine(routine_type: str, message: str):
 
     with detector._voice_lock:
         if detector.voice_agent is None:
-            detector.voice_agent = VoiceAgent()
-            detector.voice_agent.notifier = detector.notifier
+            detector.voice_agent = detector._make_voice_agent()
         if not detector.voice_agent.is_running:
             detector.voice_agent.speak(message)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    detector._loop = asyncio.get_event_loop()  # 스케줄러 스레드에서 코루틴 실행용
+    loop = asyncio.get_event_loop()
+    detector._loop = loop  # 스케줄러 스레드에서 코루틴 실행용
 
     # 복약 알림 스케줄러 (config.PILL_TIME — 레거시 단일 시간)
     hr, mn = map(int, config.PILL_TIME.split(":"))
     scheduler.add_job(scheduled_pill_reminder, 'cron', hour=hr, minute=mn)
 
-    # 보호자가 등록한 medications.json 기반 리마인더 (매 분 체크)
+    # 보호자가 등록한 medications 기반 리마인더 (매 분 체크)
     scheduler.add_job(_medication_tick, 'cron', second=0, id="medication_tick")
 
     # 보호자가 등록한 Firestore events 기반 일정 알림 (매 분 체크)
@@ -900,16 +979,22 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     logger.info(f"스케줄러 시작 완료 (알람: {config.PILL_TIME}, 루틴: {len(config.DAILY_ROUTINES)}개)")
 
-    _pairing_listener.start()
-    _devices_listener.start()
-    await _livekit_publisher.start()
+    # 전역 사진 리스너 시작
+    _photos_listener.start()
+
+    # per-device LiveKit 퍼블리셔 시작 (_get_or_create_detector 호출 시 생성된 것들)
+    for _did, (_dev_l, _pair_l, _lk_pub) in list(_device_listeners.items()):
+        await _lk_pub.start()
 
     detection_task = asyncio.create_task(detector.run_detection_loop())
     heartbeat_task = asyncio.create_task(detector._heartbeat_loop())
     yield
-    await _livekit_publisher.stop()
-    _devices_listener.stop()
-    _pairing_listener.stop()
+
+    for _did, (_dev_l, _pair_l, _lk_pub) in list(_device_listeners.items()):
+        await _lk_pub.stop()
+        _dev_l.stop()
+        _pair_l.stop()
+    _photos_listener.stop()
     detector.stop()
     detection_task.cancel()
     heartbeat_task.cancel()
@@ -935,18 +1020,24 @@ app.add_middleware(
 )
 
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+@app.websocket("/ws/{device_id}")
+async def websocket_endpoint(websocket: WebSocket, device_id: str):
+    det = _get_or_create_detector(device_id)
+    det._loop = asyncio.get_event_loop()
     await websocket.accept()
-    detector.clients.add(websocket)
-    logger.info(f"WebSocket 연결 (총 {len(detector.clients)}개)")
+    det.clients.add(websocket)
+    # 이 기기의 detection/heartbeat loop가 아직 안 시작됐으면 시작
+    if not det.running:
+        asyncio.create_task(det.run_detection_loop())
+        asyncio.create_task(det._heartbeat_loop())
+    logger.info(f"WebSocket 연결 [{device_id}] (총 {len(det.clients)}개)")
 
     messages = {"idle": "대기 모드", "greeting": "어르신 감지! 인사 모드", "active": "콘텐츠 모드"}
-    pairing_status = detector.pairing.get_status()
+    pairing_status = det.pairing.get_status()
     await websocket.send_json({
-        "status": detector.current_status,
-        "message": messages.get(detector.current_status, ""),
-        "detected": detector.current_status in ("greeting", "active"),
+        "status": det.current_status,
+        "message": messages.get(det.current_status, ""),
+        "detected": det.current_status in ("greeting", "active"),
         "pairing": pairing_status,
     })
 
@@ -954,24 +1045,25 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        detector.clients.discard(websocket)
+        det.clients.discard(websocket)
 
 
 # 시니어 프론트(태블릿) ↔ 백엔드 미디어 다리.
-# binary 첫 byte 로 메시지 type 구분: 0x00 video frame(JPEG), 0x01 audio out(TTS), 0x02 audio in(PCM)
+# binary 첫 byte 로 메시지 type 구분: 0x00 video frame(JPEG)
 MEDIA_TYPE_VIDEO = 0x00
-MEDIA_TYPE_AUDIO_OUT = 0x01
-MEDIA_TYPE_AUDIO_IN = 0x02
 
-# 시니어 프론트에 audio 를 broadcast 하기 위해 매체 connection 목록 유지
-_media_clients: set[WebSocket] = set()
-
-
-@app.websocket("/ws/media")
-async def websocket_media_endpoint(websocket: WebSocket):
+@app.websocket("/ws/media/{device_id}")
+async def websocket_media_endpoint(websocket: WebSocket, device_id: str):
+    det = _get_or_create_detector(device_id)
+    det._loop = asyncio.get_event_loop()
+    # lifespan 이후 동적으로 생성된 detector의 LiveKit publisher 초기화
+    if device_id in _device_listeners:
+        _, _, lk_pub = _device_listeners[device_id]
+        if lk_pub._api is None:
+            await lk_pub.start()
     await websocket.accept()
-    _media_clients.add(websocket)
-    logger.info(f"[/ws/media] 시니어 프론트 연결 (총 {len(_media_clients)}개)")
+    det.media_clients.add(websocket)
+    logger.info(f"[/ws/media/{device_id}] 시니어 프론트 연결 (총 {len(det.media_clients)}개)")
 
     try:
         while True:
@@ -985,35 +1077,81 @@ async def websocket_media_endpoint(websocket: WebSocket):
             payload = data[1:]
 
             if mtype == MEDIA_TYPE_VIDEO:
-                # 태블릿 카메라 frame → detector.latest_frame 에 set
-                detector.latest_frame = bytes(payload)
-            elif mtype == MEDIA_TYPE_AUDIO_IN:
-                # 태블릿 마이크 PCM chunk → voice_agent 입력 (Phase 3 에서 처리)
-                if detector.voice_agent and hasattr(detector.voice_agent, 'feed_audio_chunk'):
-                    try:
-                        detector.voice_agent.feed_audio_chunk(bytes(payload))
-                    except Exception as e:
-                        logger.debug(f"[/ws/media] audio chunk feed 실패: {e}")
+                det.latest_frame = bytes(payload)
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        logger.warning(f"[/ws/media] 예외: {e}")
+        logger.warning(f"[/ws/media/{device_id}] 예외: {e}")
     finally:
-        _media_clients.discard(websocket)
-        logger.info(f"[/ws/media] 시니어 프론트 연결 해제 (남은 {len(_media_clients)}개)")
+        det.media_clients.discard(websocket)
+        logger.info(f"[/ws/media/{device_id}] 시니어 프론트 연결 해제 (남은 {len(det.media_clients)}개)")
 
 
-async def broadcast_audio_to_seniors(audio_bytes: bytes):
-    """TTS 결과 audio (mp3 bytes) 를 시니어 프론트들에게 broadcast (Phase 2)."""
-    if not _media_clients:
-        return
-    payload = bytes([MEDIA_TYPE_AUDIO_OUT]) + audio_bytes
-    for client in list(_media_clients):
-        try:
-            await client.send_bytes(payload)
-        except Exception as e:
-            logger.debug(f"[broadcast_audio] client 전송 실패: {e}")
-        logger.info(f"WebSocket 해제 (총 {len(detector.clients)}개)")
+@app.websocket("/ws/voice/{device_id}")
+async def ws_voice(websocket: WebSocket, device_id: str):
+    det = _get_or_create_detector(device_id)
+    det._loop = asyncio.get_event_loop()
+    await websocket.accept()
+    loop = asyncio.get_running_loop()
+    await det.voice_bridge.attach(websocket, loop)
+
+    # 음성 클라이언트가 연결되면 face detection 없이도 voice agent 즉시 보장
+    # (카메라 없이도 호출어가 동작해야 함)
+    with det._voice_lock:
+        if det.pairing.is_paired:
+            if det.voice_agent is None:
+                det.voice_agent = det._make_voice_agent()
+            if not det.voice_agent.is_running:
+                det.voice_agent.start_conversation()
+
+    try:
+        while True:
+            msg = await websocket.receive()
+            if msg.get("type") == "websocket.disconnect":
+                break
+            audio = audio_transport.extract_audio(msg)
+            if audio:
+                # idle 전환으로 agent가 멈춰있으면 재시작 (wake word 재동작)
+                with det._voice_lock:
+                    if (det.voice_agent is not None
+                            and not det.voice_agent.is_running
+                            and det.pairing.is_paired):
+                        det.voice_agent.start_conversation()
+                det.voice_bridge.feed_audio(audio)
+            ctrl = audio_transport.parse_control(msg)
+            if ctrl and ctrl.get("action") == "playback_done":
+                det.voice_bridge.signal_playback_done()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        det.voice_bridge.detach(websocket)
+
+
+@app.get("/tts/latest")
+async def tts_latest():
+    path = config.SOUNDS_DIR / "temp_voice.mp3"
+    if not path.exists():
+        from fastapi import HTTPException
+        raise HTTPException(404)
+    return FileResponse(path, media_type="audio/mpeg")
+
+
+@app.get("/sounds/{filename}")
+async def sounds(filename: str):
+    path = config.SOUNDS_DIR / filename
+    if not path.exists():
+        from fastapi import HTTPException
+        raise HTTPException(404)
+    return FileResponse(path)
+
+
+@app.get("/voice-msg/{filename}")
+async def voice_msg_file(filename: str):
+    path = config.VOICE_MSG_DIR / filename
+    if not path.exists():
+        from fastapi import HTTPException
+        raise HTTPException(404)
+    return FileResponse(path)
 
 
 @app.websocket("/ws/vision")
@@ -1217,13 +1355,14 @@ PAIRING_CODE_EXPIRY = 300
 
 
 @app.post("/api/pairing/code")
-async def generate_pairing_code():
+async def generate_pairing_code(device_id: str = Query(None)):
     """새 페어링 코드를 생성합니다 (5분 유효)."""
-    code = detector.pairing.generate_code()
+    det = _get_or_create_detector(device_id) if device_id else detector
+    code = det.pairing.generate_code()
     return {
         "code": code,
         "expires_in": PAIRING_CODE_EXPIRY,
-        "device_id": detector.pairing.device_id,
+        "device_id": det.pairing.device_id,
     }
 
 
@@ -1238,12 +1377,17 @@ async def verify_pairing(payload: dict):
     if not code or not user_id or not user_name:
         return {"success": False, "error": "code, user_id, user_name 필드가 필요합니다."}
 
-    result = detector.pairing.verify_and_pair(code, user_id, user_name, fcm_token)
+    # 코드를 가진 device 검색 (없으면 기본 detector fallback)
+    target_det = next(
+        (d for d in _device_states.values() if d.pairing.pairing_code == code),
+        detector,
+    )
+    result = target_det.pairing.verify_and_pair(code, user_id, user_name, fcm_token)
 
     # 매칭 성공 시 FCM 토큰 자동 등록 + WebSocket으로 시니어 앱에 알림
     if result.get("success"):
         if fcm_token:
-            detector.notifier.register_token(fcm_token)
+            target_det.notifier.register_token(fcm_token)
 
         # 시니어 앱(프론트엔드)에 페어링 완료 알림 전송
         pairing_msg = {
@@ -1251,16 +1395,16 @@ async def verify_pairing(payload: dict):
             "paired": True,
             "family_id": result.get("family_id"),
             "user_name": user_name,
-            "pairing": detector.pairing.get_status(),
+            "pairing": target_det.pairing.get_status(),
         }
         disconnected = set()
-        for client in list(detector.clients):
+        for client in list(target_det.clients):
             try:
                 await client.send_json(pairing_msg)
             except Exception:
                 disconnected.add(client)
-        detector.clients -= disconnected
-        logger.info(f"[Pairing] WebSocket으로 페어링 완료 알림 전송 ({len(detector.clients)}개 클라이언트)")
+        target_det.clients -= disconnected
+        logger.info(f"[Pairing] WebSocket으로 페어링 완료 알림 전송 [{target_det.device_id}] ({len(target_det.clients)}개 클라이언트)")
 
     return result
 
@@ -1392,7 +1536,15 @@ async def get_routines():
 _medications_file = Path(__file__).parent / "medications.json"
 
 
-def _load_medications() -> list:
+def _load_medications(device_id: str = "") -> list:
+    did = device_id or DEVICE_ID
+    db = _get_db()
+    if db:
+        try:
+            docs = db.collection("medications").document(did).collection("items").stream()
+            return [{"id": doc.id, **doc.to_dict()} for doc in docs]
+        except Exception as e:
+            logger.warning(f"[_load_medications] Firestore 조회 실패: {e}")
     import json
     if _medications_file.exists():
         return json.loads(_medications_file.read_text(encoding="utf-8"))
@@ -1405,9 +1557,9 @@ def _save_medications(meds: list):
 
 
 @app.get("/api/medications")
-async def list_medications():
+async def list_medications(device_id: str = Query(None)):
     """복약 목록을 반환합니다."""
-    return {"medications": _load_medications()}
+    return {"medications": _load_medications(device_id or DEVICE_ID)}
 
 
 def _safe_int(value, default=0):
@@ -1496,6 +1648,7 @@ async def medication_history(limit: int = 30):
 async def medication_calendar(
     from_: str = Query(None, alias="from"),
     to: str = None,
+    device_id: str = Query(None),
 ):
     """기간별 복약 캘린더 데이터를 반환합니다.
 
@@ -1505,6 +1658,7 @@ async def medication_calendar(
     """
     import datetime as _dt
 
+    did = device_id or DEVICE_ID
     today = _dt.date.today()
     try:
         end_date = _dt.date.fromisoformat(to) if to else today
@@ -1517,7 +1671,7 @@ async def medication_calendar(
     if start_date > end_date:
         start_date, end_date = end_date, start_date
 
-    meds = _load_medications()
+    meds = _load_medications(did)
     prescribed = [
         {
             "med_id": m.get("id"),
@@ -1574,7 +1728,7 @@ async def medication_calendar(
             end_iso = (end_date + _dt.timedelta(days=1)).isoformat()
             docs = (
                 db.collection("medication_logs")
-                .where("device_id", "==", config.DEVICE_ID)
+                .where("device_id", "==", did)
                 .where("date", ">=", start_iso)
                 .where("date", "<", end_iso)
                 .stream()
@@ -1703,18 +1857,35 @@ PHOTOS_DIR.mkdir(exist_ok=True)
 
 
 @app.get("/api/photos")
-async def list_photos(limit: int = 50):
-    """사진 목록을 반환합니다."""
-    files = sorted(PHOTOS_DIR.glob("*.jpg"), key=lambda f: f.stat().st_mtime, reverse=True)
-    files += sorted(PHOTOS_DIR.glob("*.png"), key=lambda f: f.stat().st_mtime, reverse=True)
-    photos = []
-    for f in files[:limit]:
-        photos.append({
-            "id": f.stem,
-            "filename": f.name,
-            "created_at": datetime.datetime.fromtimestamp(f.stat().st_mtime).isoformat(),
-        })
-    return {"photos": photos}
+async def list_photos(limit: int = 50, device_id: str = Query(None)):
+    """Firestore photos 컬렉션에서 이 기기에 등록된 사진 목록을 반환합니다."""
+    did = device_id or DEVICE_ID
+    db = _get_db()
+    if not db:
+        return {"photos": []}
+    try:
+        docs = (
+            db.collection("photos")
+            .where("deviceId", "==", did)
+            .where("displayOnDevice", "==", True)
+            .stream()
+        )
+        photos = []
+        for doc in docs:
+            data = doc.to_dict() or {}
+            photos.append({
+                "id": doc.id,
+                "uri": data.get("uri", ""),
+                "uploaderName": data.get("uploaderName", "가족"),
+                "emoji": data.get("emoji", "📸"),
+                "caption": data.get("caption", ""),
+                "_ts": data.get("createdAt"),
+            })
+        photos.sort(key=lambda p: p.pop("_ts") or 0, reverse=True)
+        return {"photos": photos[:limit]}
+    except Exception as e:
+        logger.warning(f"[/api/photos] Firestore 조회 실패: {e}")
+        return {"photos": []}
 
 
 @app.post("/api/photos/upload")
@@ -1756,6 +1927,60 @@ async def get_photo(filename: str):
     if filepath.exists():
         return FileResponse(filepath)
     return {"error": "사진을 찾을 수 없습니다."}
+
+
+# HEIC→JPEG 변환 프록시 캐시 (런타임 메모리 캐시 — 재시작 시 초기화돼도 무방)
+_PHOTO_PROXY_CACHE_DIR = Path(__file__).parent / "photo_cache"
+_PHOTO_PROXY_CACHE_DIR.mkdir(exist_ok=True)
+
+
+@app.get("/api/photo-proxy")
+async def photo_proxy(url: str = Query(...)):
+    """원격 사진(Firebase Storage 등)을 중계한다. 아이폰 HEIC는 JPEG로 변환해
+    Android Chrome(갤럭시탭)에서도 보이게 한다. 변환 결과는 캐시한다."""
+    import hashlib
+    from io import BytesIO
+    from fastapi import HTTPException
+
+    key = hashlib.sha256(url.encode()).hexdigest()[:24]
+    cache_path = _PHOTO_PROXY_CACHE_DIR / f"{key}.jpg"
+    if cache_path.exists():
+        return FileResponse(cache_path, media_type="image/jpeg")
+
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+            data = r.content
+    except Exception as e:
+        logger.warning(f"[photo-proxy] 다운로드 실패: {e}")
+        raise HTTPException(status_code=502, detail="원본 이미지를 가져오지 못했습니다.")
+
+    ctype = r.headers.get("content-type", "").lower()
+    # HEIC·PNG·JPEG 가리지 않고 모두 1600px JPEG로 통일 압축.
+    # (PNG 원본이 수 MB라 그대로 보내면 태블릿 슬라이드가 로딩을 못 따라가 이전 사진이 남음)
+    try:
+        from PIL import ImageOps
+        img = Image.open(BytesIO(data))
+        img = ImageOps.exif_transpose(img).convert("RGB")  # 아이폰 EXIF 회전 보정
+        img.thumbnail((1600, 1600))                        # 갤탭 표시용 다운스케일
+        buf = BytesIO()
+        img.save(buf, format="JPEG", quality=85)
+        jpeg = buf.getvalue()
+        try:
+            cache_path.write_bytes(jpeg)
+        except Exception:
+            pass
+        return Response(content=jpeg, media_type="image/jpeg")
+    except Exception as e:
+        logger.warning(f"[photo-proxy] 이미지 변환 실패, 원본 전송: {e}")
+
+    # 변환 실패(이미지 아님/디코더 미지원) 시 원본 그대로 중계
+    try:
+        cache_path.write_bytes(data)
+    except Exception:
+        pass
+    return Response(content=data, media_type=ctype or "image/jpeg")
 
 
 # === 보호자 리포트 API ===
@@ -2163,3 +2388,9 @@ async def snapshot():
         media_type="image/jpeg",
         headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
     )
+
+
+# 프론트엔드 정적 파일 서빙 — API 라우트 이후에 마운트해야 우선순위 올바름
+_dist_dir = Path(__file__).parent / "dist"
+if _dist_dir.exists():
+    app.mount("/", StaticFiles(directory=str(_dist_dir), html=True), name="frontend")

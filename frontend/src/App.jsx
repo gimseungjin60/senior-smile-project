@@ -8,10 +8,13 @@ import ReminderScreen from './components/ReminderScreen'
 import CognitiveGame from './components/CognitiveGame'
 import StretchingGuide from './components/StretchingGuide'
 import MediaBridge from './components/MediaBridge'
+import { useVoiceClient } from './audio/useVoiceClient'
 import { seniorWsUrl } from './utils/host'
+import { getDeviceId } from './utils/deviceId'
 import './App.css'
 
-const WS_URL = seniorWsUrl('/ws')
+const DEVICE_ID = getDeviceId()
+const WS_URL = seniorWsUrl(`/ws/${DEVICE_ID}`)
 const TRANSITION_MS = 500
 
 function App() {
@@ -32,6 +35,8 @@ function App() {
   const [activity, setActivity] = useState(null)  // 'cognitive_game' | 'stretching' | null
   const transitionTimer = useRef(null)
   const reminderExitTimer = useRef(null)
+
+  useVoiceClient(pairing?.is_paired === true)
 
   // 화면 전환 애니메이션
   useEffect(() => {
@@ -99,6 +104,9 @@ function App() {
           if (data.activity) setActivity(data.activity)
           return
         }
+
+        // PhotosListener가 보내는 실시간 새 사진 알림 ({"newPhotoUrl": uri}, type 없음)
+        if (data.newPhotoUrl) setNewPhotoUrl(data.newPhotoUrl)
 
         if (data.status) setStatus(data.status)
         if (data.activity !== undefined) setActivity(data.activity || null)
@@ -176,8 +184,9 @@ function App() {
 
   return (
     <div className="app">
-      {/* 태블릿 카메라/마이크/스피커 ↔ 백엔드 미디어 다리 (CAMERA_SOURCE=tablet 환경에서만 의미) */}
-      <MediaBridge />
+      {/* 태블릿 카메라/마이크/스피커 ↔ 백엔드 미디어 다리.
+          페어링 후에만 마운트 → 카메라 권한 팝업도 페어링 후 1회만 뜸 + 사생활 보호 */}
+      {pairing?.is_paired === true && <MediaBridge />}
       {/* 메인 콘텐츠 — 호출어 인식 시 오른쪽으로 밀림 */}
       <div className={`app-main ${isConversationActive ? 'app-main--pushed' : ''}`}>
         {/* 기본 화면 — 항상 마운트 상태 유지 */}

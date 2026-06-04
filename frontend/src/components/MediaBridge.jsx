@@ -1,24 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import { seniorWsUrl } from '../utils/host'
+import { getDeviceId } from '../utils/deviceId'
 
-const WS_URL = seniorWsUrl('/ws/media')
+const WS_URL = seniorWsUrl(`/ws/media/${getDeviceId()}`)
 
-// 백엔드 main.py 의 MEDIA_TYPE_* 와 동일
 const MEDIA_TYPE_VIDEO = 0x00
-const MEDIA_TYPE_AUDIO_OUT = 0x01
-// const MEDIA_TYPE_AUDIO_IN = 0x02  // Phase 3 에서 사용
 
 const FRAME_INTERVAL_MS = 200
 const FRAME_WIDTH = 640
 const FRAME_HEIGHT = 480
 const JPEG_QUALITY = 0.7
 
-/**
- * 태블릿 카메라/마이크/스피커를 백엔드로 brigde.
- * - 카메라: getUserMedia(video) → canvas 캡처 → JPEG → WS binary 전송
- * - 스피커: WS 에서 받은 audio (TTS) → <audio> 재생
- * - 마이크: Phase 3 에서 추가
- */
 export default function MediaBridge() {
   const videoRef = useRef(null)
   const canvasRef = useRef(null)
@@ -68,21 +60,6 @@ export default function MediaBridge() {
       ws.onopen = () => {
         wsRef.current = ws
         setWsConnected(true)
-      }
-      ws.onmessage = (event) => {
-        if (!(event.data instanceof ArrayBuffer)) return
-        const arr = new Uint8Array(event.data)
-        if (arr.length < 2) return
-        const mtype = arr[0]
-        const payload = arr.subarray(1)
-        if (mtype === MEDIA_TYPE_AUDIO_OUT) {
-          // TTS audio 재생
-          const blob = new Blob([payload], { type: 'audio/mpeg' })
-          const url = URL.createObjectURL(blob)
-          const audio = new Audio(url)
-          audio.onended = () => URL.revokeObjectURL(url)
-          audio.play().catch((e) => console.warn('[MediaBridge] audio 재생 실패:', e))
-        }
       }
       ws.onclose = () => {
         wsRef.current = null
@@ -143,7 +120,6 @@ export default function MediaBridge() {
           백엔드 연결 중...
         </div>
       )}
-      {/* 카메라 미리보기 — 작게 (디버그 용) */}
       <video
         ref={videoRef}
         autoPlay
