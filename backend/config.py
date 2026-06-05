@@ -21,7 +21,9 @@ def _get_or_create_device_id() -> str:
     _device_file.write_text(json.dumps({"device_id": device_id}), encoding="utf-8")
     return device_id
 
-DEVICE_ID = _get_or_create_device_id()
+# 클라우드(Render 등) 배포 시 컨테이너 파일시스템이 휘발성이라 device_id.json 이
+# 재배포마다 새로 생성되면 페어링이 깨진다. DEVICE_ID env 가 있으면 그 값을 고정 사용.
+DEVICE_ID = os.environ.get("DEVICE_ID") or _get_or_create_device_id()
 
 # ==========================================
 # 기본 설정

@@ -1,0 +1,31 @@
+# 백엔드만 이미지에 포함 — 컨텍스트 최소화
+frontend/
+functions/
+docs/
+.claude/
+.git/
+.github/
+*.md
+
+# 파이썬 캐시/가상환경
+**/__pycache__/
+*.pyc
+backend/.venv/
+backend/venv/
+backend/.venv-*/
+
+# 시크릿/런타임 상태 (런타임 env 로 주입 — 이미지에 넣지 않음)
+backend/.env
+*.env
+backend/serviceAccountKey.json
+backend/device_id.json
+backend/users_local.json
+backend/voice_messages/
+backend/greeting_state.json
+backend/sounds/temp_*
+
+# Firebase 호스팅/룰 (백엔드 런타임과 무관)
+.firebaserc
+firebase.json
+firestore.rules
+firestore.indexes.json

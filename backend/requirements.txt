@@ -1,29 +1,25 @@
 fastapi==0.115.0
 uvicorn[standard]==0.30.0
 python-multipart>=0.0.9
-opencv-python>=4.8.0
-# macOS arm64 환경에서 `mp.solutions` (Hands/Pose 레거시 API) 가 살아있는 마지막 안정 버전
-# 0.10.18+ 부터는 macOS arm64 wheel이 solutions 빼고 tasks 만 포함 → 인지 게임 깨짐
-# Python 3.11 권장 (3.13/3.14 에선 wheel 부족하거나 stub만 설치됨)
-mediapipe==0.10.14
+# 서버측 비전: 얼굴 DNN 감지(main.py) + LiveKit 프레임 변환(livekit_publisher.py).
+# headless = GUI 라이브러리(libGL) 불필요 → 클라우드 이미지 경량화.
+# 인지게임/스트레칭 비전은 브라우저 MediaPipe Web으로 이전됨(서버 mediapipe 제거,
+# deprecated /ws/vision 만 잔존하며 호출 시 graceful 에러 반환).
+opencv-python-headless>=4.8.0
 attrs>=23.0.0
-# mediapipe 0.10.14 가 protobuf<5 가정 (`SymbolDatabase.GetPrototype` 사용)
-# protobuf 5+ 에서 해당 메서드 제거 → vision_engine 런타임 크래시
-# google-cloud-firestore 는 4.25.8+ 요구 → 4.25.x 에서 양립
+# firebase-admin / google-cloud-firestore 가 protobuf>=4.25.8 요구. <5 로 상한 고정(호환 안전).
 protobuf>=4.25.8,<5
 httpx>=0.27.0
 Pillow>=10.0.0
 numpy>=1.24.0
-SpeechRecognition>=3.10.0
+# STT 는 브라우저 마이크 발화를 OpenAI Whisper API 로 전사. 로컬 마이크/스피커 의존 제거됨
+# (PyAudio·pygame·SpeechRecognition 삭제 — 오디오 I/O 가 갤탭 브라우저로 이전).
 openai>=1.0.0
-pygame>=2.5.0
 firebase-admin>=6.0.0
 APScheduler>=3.10.0
 python-dotenv>=1.0.0
-PyAudio>=0.2.14
 PyJWT>=2.8.0
 bcrypt>=4.0.0
-# LiveKit publisher (LTE 환경 실시간 영상)
-# livekit (rtc) 와 livekit-api 는 별도 PyPI 패키지. 1.x 기준.
+# LiveKit publisher (실시간 영상)
 livekit>=1.1.0
 livekit-api>=1.0.0
