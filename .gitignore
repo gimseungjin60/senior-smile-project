@@ -16,6 +16,9 @@ backend/.venv-*/
 frontend/node_modules/
 frontend/dist/
 
+# 프론트 빌드물 — 백엔드가 서빙(vite outDir). Docker 빌드 전 npm run build 로 생성, git에는 미포함
+backend/dist/
+
 # 보안 키/환경변수
 backend/.env
 backend/serviceAccountKey.json

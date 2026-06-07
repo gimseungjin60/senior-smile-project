@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { seniorWsUrl, seniorHttpUrl } from '../utils/host'
+import { getDeviceId } from '../utils/deviceId'
 // @ricky0123/vad-web(+onnxruntime-web)은 무거워서(~400KB) 동적 import로 메인 번들에서 분리.
 // 페어링되어 이 훅이 실제 가동될 때만 로드된다.
 
@@ -17,7 +18,7 @@ import { seniorWsUrl, seniorHttpUrl } from '../utils/host'
  * ⚠️ 이 훅의 진짜 검증은 실제 갤탭 마이크로 도는 end-to-end 통합 테스트다. (스크립트로 'PASS' 못 만듦)
  */
 
-const WS_URL = seniorWsUrl('/ws/voice')
+const WS_URL = seniorWsUrl(`/ws/voice/${getDeviceId()}`)
 // TTS/효과음 재생 베이스. 서버가 보내는 url은 /tts/latest, /sounds/... 같은 서버 기준 절대경로라
 // 로컬 dev(프론트 5173 ↔ 백엔드 8000)에서 상대경로로 두면 5173으로 요청돼 404 → 무음.
 const HTTP_BASE = seniorHttpUrl()

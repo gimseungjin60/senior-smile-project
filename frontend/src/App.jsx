@@ -7,11 +7,14 @@ import SubtitleBar from './components/SubtitleBar'
 import ReminderScreen from './components/ReminderScreen'
 import CognitiveGame from './components/CognitiveGame'
 import StretchingGuide from './components/StretchingGuide'
+import MediaBridge from './components/MediaBridge'
 import { seniorWsUrl } from './utils/host'
+import { getDeviceId } from './utils/deviceId'
 import { useVoiceClient } from './audio/useVoiceClient'
 import './App.css'
 
-const WS_URL = seniorWsUrl('/ws')
+// 이 태블릿의 고유 device_id 로 서버에 연결 (멀티기기: 한 백엔드가 기기별 독립 처리)
+const WS_URL = seniorWsUrl(`/ws/${getDeviceId()}`)
 const TRANSITION_MS = 500
 const PIN_VOICE_PANEL = true  // 시연: 음성 패널 항상 고정 표시(마이크/듣는 상태 가시화)
 
@@ -34,9 +37,8 @@ function App() {
   const transitionTimer = useRef(null)
   const reminderExitTimer = useRef(null)
 
-  // 음성 클라이언트(브라우저 마이크↔/ws/voice). 페어링되면 가동.
-  // NOTE: 세션 트리거(voice_agent 시작)는 현재 서버 카메라 얼굴감지 기반 → 클라우드에선
-  // 재설계 필요(P5). 로컬 dev에선 PC 웹캠으로 세션이 시작되므로 end-to-end 테스트 가능.
+  // 음성 클라이언트(브라우저 마이크↔/ws/voice/{device_id}). 페어링되면 가동.
+  // 서버는 음성 WS 연결 시 카메라 없이도 voice agent를 능동 시작 → 호출어 동작(클라우드 대응).
   const { micOpen } = useVoiceClient(pairing?.is_paired === true)
 
   // 화면 전환 애니메이션
@@ -93,6 +95,9 @@ function App() {
           })
         }
         if (data.type === 'pairing') return
+
+        // photos 리스너: 보호자가 사진 업로드 시 {newPhotoUrl} 단독 메시지 (type 없음)
+        if (data.newPhotoUrl) setNewPhotoUrl(data.newPhotoUrl)
 
         if (data.type === 'voice') {
           setSubtitle(data.subtitle || '')
@@ -182,6 +187,9 @@ function App() {
 
   return (
     <div className="app">
+      {/* 태블릿 카메라 → 백엔드(/ws/media/{device_id}) 송신. 페어링 후에만 마운트(카메라 권한 1회). */}
+      {pairing?.is_paired === true && <MediaBridge />}
+
       {/* 메인 콘텐츠 — 음성 패널 고정 시 항상 오른쪽으로 밀림 */}
       <div className={`app-main ${(isConversationActive || PIN_VOICE_PANEL) ? 'app-main--pushed' : ''}`}>
         {/* 기본 화면 — 항상 마운트 상태 유지 */}

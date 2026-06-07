@@ -17,11 +17,13 @@ logger = logging.getLogger(__name__)
 class DevicesListener:
     def __init__(
         self,
+        device_id: str,
         pairing_manager,
         on_unpaired: Optional[Callable[[str], None]] = None,
         on_paired: Optional[Callable[[str], None]] = None,
         on_camera_requested: Optional[Callable[[bool], None]] = None,
     ):
+        self.device_id = device_id
         self.pairing_manager = pairing_manager
         self.on_unpaired = on_unpaired
         self.on_paired = on_paired
@@ -41,7 +43,7 @@ class DevicesListener:
             logger.warning("[DevicesListener] DB 없음 — 리스너 미시작")
             return
 
-        doc_ref = self.db.collection("devices").document(config.DEVICE_ID)
+        doc_ref = self.db.collection("devices").document(self.device_id)
 
         def _on_snapshot(doc_snapshot, changes, read_time):
             for snap in doc_snapshot:
@@ -58,7 +60,7 @@ class DevicesListener:
                         self.pairing_manager.unpair()
                         if self.on_unpaired:
                             try:
-                                self.on_unpaired(config.DEVICE_ID)
+                                self.on_unpaired(self.device_id)
                             except Exception as e:
                                 logger.error(f"[DevicesListener] on_unpaired 콜백 오류: {e}")
                     elif len(uids) >= 1 and not self.pairing_manager.is_paired:
@@ -69,7 +71,7 @@ class DevicesListener:
                         logger.info(f"[DevicesListener] pairedUids={len(uids)} → is_paired=True 동기화")
                         if self.on_paired:
                             try:
-                                self.on_paired(config.DEVICE_ID)
+                                self.on_paired(self.device_id)
                             except Exception as e:
                                 logger.error(f"[DevicesListener] on_paired 콜백 오류: {e}")
 
@@ -85,7 +87,7 @@ class DevicesListener:
                             logger.error(f"[DevicesListener] on_camera_requested 콜백 오류: {e}")
 
         self._unsubscribe = doc_ref.on_snapshot(_on_snapshot)
-        logger.info(f"[DevicesListener] devices/{config.DEVICE_ID} 리스너 시작")
+        logger.info(f"[DevicesListener] devices/{self.device_id} 리스너 시작")
 
     def stop(self):
         if self._unsubscribe:

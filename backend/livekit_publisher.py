@@ -13,8 +13,6 @@ from typing import Optional
 import cv2
 import numpy as np
 
-import config
-
 logger = logging.getLogger(__name__)
 
 
@@ -54,7 +52,7 @@ class LiveKitPublisher:
                 return  # SDK/환경 미준비
 
             try:
-                room_name = f"device-{config.DEVICE_ID}"
+                room_name = f"device-{self.detector.device_id}"
                 token = (
                     self._api.AccessToken(self.api_key, self.api_secret)
                     .with_identity("senior")

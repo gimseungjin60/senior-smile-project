@@ -19,13 +19,16 @@ class FirestorePairingListener:
         self,
         pairing_manager,
         on_paired: Optional[Callable[[str, str], None]] = None,
+        device_id: str = "",
     ):
         """
         pairing_manager: PairingManager 인스턴스
         on_paired: (device_id, uid) → None 콜백 (WS 브로드캐스트용)
+        device_id: 이 리스너가 감시할 기기 ID (미지정 시 config.DEVICE_ID)
         """
         self.pairing_manager = pairing_manager
         self.on_paired = on_paired
+        self._device_id = device_id or config.DEVICE_ID
         self._unsubscribe = None
         self._lock = threading.Lock()
 
@@ -40,7 +43,7 @@ class FirestorePairingListener:
             logger.warning("[FsListener] DB 없음 — 리스너 미시작")
             return
 
-        device_id = config.DEVICE_ID
+        device_id = self._device_id
         col_ref = self.db.collection("pairing_requests")
         # 첫 snapshot 은 기존 문서들이 ADDED 로 전달됨 — 옛 claimed=true PIN 까지 처리되어
         # 미페어링 상태인데 is_paired=True 로 잘못 set 되는 버그 방지

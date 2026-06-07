@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { seniorHttpUrl } from '../utils/host'
+import { getDeviceId } from '../utils/deviceId'
 import './IdleScreen.css'
 
 const BACKEND_API = seniorHttpUrl()
@@ -74,7 +75,7 @@ function IdleScreen({ pairing }) {
     if (inFlight.current) return
     inFlight.current = true
     try {
-      const res = await fetch(`${BACKEND_API}/api/pairing/code`, { method: 'POST' })
+      const res = await fetch(`${BACKEND_API}/api/pairing/code?device_id=${getDeviceId()}`, { method: 'POST' })
       const data = await res.json()
       if (data?.code) {
         setPairingCode(data.code)

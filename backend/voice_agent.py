@@ -16,6 +16,9 @@ class VoiceAgent:
         if not config.OPENAI_API_KEY or config.OPENAI_API_KEY.startswith("여기에"):
             print("[VoiceAgent] ⚠️ OpenAI API 키가 설정되지 않았습니다. .env 파일을 확인하세요.")
         self.openai_client = OpenAI(api_key=config.OPENAI_API_KEY)
+        # 이 에이전트가 속한 기기 ID. 멀티기기에서 세션/복약/lastPillTakenAt 을 올바른 기기에 기록하려면 필수.
+        # main.py 의 _make_voice_agent() 가 detector.device_id 로 덮어쓴다 (기본값은 단일기기 fallback).
+        self.device_id = config.DEVICE_ID
         self.is_pill_taken = False
         self.is_running = False
         self.is_listening = False
@@ -190,7 +193,7 @@ class VoiceAgent:
         try:
             import datetime
             self.db.collection("sessions").add({
-                "device_id": config.DEVICE_ID,
+                "device_id": self.device_id,
                 "messages": chat_log,
                 "emotion_report": emotion_report,
                 "pill_taken": self.is_pill_taken,
@@ -211,7 +214,7 @@ class VoiceAgent:
 
             now = datetime.datetime.now()
             now_min = now.hour * 60 + now.minute
-            device_id = config.DEVICE_ID
+            device_id = self.device_id
 
             meds = []
             if self.db:
@@ -455,7 +458,7 @@ class VoiceAgent:
             if self.db:
                 try:
                     import datetime as _dt
-                    self.db.collection("devices").document(config.DEVICE_ID).set(
+                    self.db.collection("devices").document(self.device_id).set(
                         {"lastPillTakenAt": _dt.datetime.now(tz=_dt.timezone.utc)},
                         merge=True,
                     )

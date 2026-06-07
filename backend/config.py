@@ -28,7 +28,10 @@ DEVICE_ID = os.environ.get("DEVICE_ID") or _get_or_create_device_id()
 # ==========================================
 # 기본 설정
 # ==========================================
-CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX", 0))
+# 카메라 소스: "tablet"(시니어 프론트가 /ws/media 로 프레임 업로드, 클라우드 기본)
+#            "usb"(라즈베리파이 등 서버에 물린 USB 웹캠을 cv2.VideoCapture 로 직접 사용)
+CAMERA_SOURCE = os.environ.get("CAMERA_SOURCE", "tablet").lower()
+CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX", 0))  # CAMERA_SOURCE=usb 경로에서만 사용
 FRAME_INTERVAL = 0.1          # ~10 FPS
 CORS_ORIGINS = ["*"]
 
@@ -40,7 +43,7 @@ DETECTION_CONFIRM_FRAMES = 3  # N프레임 연속 감지 후 세션 시작
 
 # 상태 전환 타이밍
 GREETING_DURATION = 5.0       # GREETING → ACTIVE 자동 전환 (초)
-ACTIVE_IDLE_TIMEOUT = 30.0    # ACTIVE에서 얼굴 미감지 후 IDLE 복귀 (초)
+ACTIVE_IDLE_TIMEOUT = 3600.0  # ACTIVE에서 얼굴 미감지 후 IDLE 복귀 (초, 1시간). 태블릿 전면카메라가 얼굴을 자주 놓쳐 대화가 끊기는 것 방지
 
 # 모델 경로
 MODELS_DIR = Path(__file__).parent / "models"
