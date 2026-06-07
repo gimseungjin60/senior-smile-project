@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { seniorWsUrl } from '../utils/host'
+import { seniorWsUrl, seniorHttpUrl } from '../utils/host'
 // @ricky0123/vad-web(+onnxruntime-web)은 무거워서(~400KB) 동적 import로 메인 번들에서 분리.
 // 페어링되어 이 훅이 실제 가동될 때만 로드된다.
 
@@ -18,6 +18,9 @@ import { seniorWsUrl } from '../utils/host'
  */
 
 const WS_URL = seniorWsUrl('/ws/voice')
+// TTS/효과음 재생 베이스. 서버가 보내는 url은 /tts/latest, /sounds/... 같은 서버 기준 절대경로라
+// 로컬 dev(프론트 5173 ↔ 백엔드 8000)에서 상대경로로 두면 5173으로 요청돼 404 → 무음.
+const HTTP_BASE = seniorHttpUrl()
 const VAD_VERSION = '0.0.30'        // package.json과 일치 유지
 const ORT_VERSION = '1.26.0'
 // 마지막 재생 후 VAD 재개 유예. beep→speak가 연달아 오므로 그 사이 캡처가 켜지지 않게 묶는다.
@@ -72,8 +75,10 @@ export function useVoiceClient(enabled) {
       }
       playingRef.current = true
       const item = queue.shift()
-      const sep = item.url.includes('?') ? '&' : '?'
-      const audio = new Audio(item.url + sep + 'ts=' + (item.ts || Date.now()))
+      // 서버 기준 절대경로(/tts/latest 등)에 백엔드 베이스를 붙여 cross-origin 재생.
+      const absUrl = item.url.startsWith('http') ? item.url : HTTP_BASE + item.url
+      const sep = absUrl.includes('?') ? '&' : '?'
+      const audio = new Audio(absUrl + sep + 'ts=' + (item.ts || Date.now()))
       audioElRef.current = audio
       // 서버는 emit마다 playback_done을 기다림(is_speaking 1:1) → 항목마다 정확히 1회 송신.
       // 재생 실패(onerror)에도 송신해야 서버가 timeout까지 멈추지 않음.
