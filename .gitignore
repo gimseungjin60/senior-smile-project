@@ -16,8 +16,11 @@ backend/.venv-*/
 frontend/node_modules/
 frontend/dist/
 
-# 프론트 빌드물 — 백엔드가 서빙(vite outDir). Docker 빌드 전 npm run build 로 생성, git에는 미포함
-backend/dist/
+# 프론트 빌드물 — 백엔드가 서빙(vite outDir).
+# Render 단일 URL(프론트+백엔드 동일출처) 서빙을 위해 git에 포함한다.
+# (.dockerignore 는 frontend/ 만 제외하고 backend/dist 는 포함 → COPY backend/ 로 이미지에 들어감)
+# 갱신 절차: cd frontend && npm run build → backend/dist 산출 → 커밋.
+# backend/dist/
 
 # 보안 키/환경변수
 backend/.env
