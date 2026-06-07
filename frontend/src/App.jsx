@@ -13,6 +13,7 @@ import './App.css'
 
 const WS_URL = seniorWsUrl('/ws')
 const TRANSITION_MS = 500
+const PIN_VOICE_PANEL = true  // 시연: 음성 패널 항상 고정 표시(마이크/듣는 상태 가시화)
 
 function App() {
   const [status, setStatus] = useState('idle')
@@ -181,8 +182,8 @@ function App() {
 
   return (
     <div className="app">
-      {/* 메인 콘텐츠 — 호출어 인식 시 오른쪽으로 밀림 */}
-      <div className={`app-main ${isConversationActive ? 'app-main--pushed' : ''}`}>
+      {/* 메인 콘텐츠 — 음성 패널 고정 시 항상 오른쪽으로 밀림 */}
+      <div className={`app-main ${(isConversationActive || PIN_VOICE_PANEL) ? 'app-main--pushed' : ''}`}>
         {/* 기본 화면 — 항상 마운트 상태 유지 */}
         <div key={visibleStatus} className={`screen-anim screen-anim--${phase}`}>
           {renderBaseContent()}
@@ -196,8 +197,8 @@ function App() {
         )}
       </div>
 
-      {/* 음성 패널 — 호출어 인식 시 오른쪽에서 슬라이드인 */}
-      <div className={`voice-side-panel ${isConversationActive ? 'voice-side-panel--open' : ''}`}>
+      {/* 음성 패널 — 시연용 항상 고정(PIN_VOICE_PANEL) */}
+      <div className={`voice-side-panel ${(isConversationActive || PIN_VOICE_PANEL) ? 'voice-side-panel--open' : ''}`}>
         <div className="side-status">
           <StatusIndicator connected={connected} status={status} />
         </div>
@@ -208,7 +209,7 @@ function App() {
           </div>
         )}
         <div className="side-voice-panel">
-          <SubtitleBar subtitle={subtitle} userText={userText} isListening={isListening} />
+          <SubtitleBar subtitle={subtitle} userText={userText} isListening={isListening} isConversationActive={isConversationActive} />
         </div>
       </div>
     </div>

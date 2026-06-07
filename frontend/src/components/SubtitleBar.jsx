@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import './SubtitleBar.css'
 
-function SubtitleBar({ subtitle, userText, isListening }) {
+function SubtitleBar({ subtitle, userText, isListening, isConversationActive }) {
   const [displayText, setDisplayText] = useState('')
   const prevSubtitle = useRef('')
   const typingTimer = useRef(null)
@@ -59,10 +59,17 @@ function SubtitleBar({ subtitle, userText, isListening }) {
           <p className="vp-text">{displayText}</p>
         </div>
       ) : !userText && (
-        <div className="vp-idle">
-          <span className="vp-idle-icon">💬</span>
-          <span className="vp-idle-text">말씀해 주세요</span>
-        </div>
+        isConversationActive ? (
+          <div className="vp-idle vp-idle--listening">
+            <span className="vp-idle-icon">🎤</span>
+            <span className="vp-idle-text">듣고 있어요 · 말씀하세요</span>
+          </div>
+        ) : (
+          <div className="vp-idle">
+            <span className="vp-idle-icon">💬</span>
+            <span className="vp-idle-text">“앨범아” 하고 불러주세요</span>
+          </div>
+        )
       )}
     </div>
   )

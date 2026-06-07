@@ -25,6 +25,10 @@ const VAD_VERSION = '0.0.30'        // package.json과 일치 유지
 const ORT_VERSION = '1.26.0'
 // 마지막 재생 후 VAD 재개 유예. beep→speak가 연달아 오므로 그 사이 캡처가 켜지지 않게 묶는다.
 const RESUME_GRACE_MS = 500
+// 마이크 캡처 제약. autoGainControl: false 가 핵심 —
+// 조용한 환경에서 AGC가 정적의 노이즈 플로어를 증폭해 VAD가 끊임없이 '발화'로 오판 → Whisper 환각 폭주.
+// echoCancellation/noiseSuppression 은 유지(스피커 유입·잡음 억제).
+const MIC_AUDIO = { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: false }
 
 export function useVoiceClient(enabled) {
   const [connected, setConnected] = useState(false)
@@ -126,7 +130,11 @@ export function useVoiceClient(enabled) {
           // wasm/worklet/모델은 CDN에서 로드(번들 부담↓, 버전 고정)
           baseAssetPath: `https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@${VAD_VERSION}/dist/`,
           onnxWASMBasePath: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`,
-          // 무음 ~1.3초면 발화 종료(노인 발화 호흡 고려). 실측 튜닝값 — design §6.
+          // 마이크 스트림 직접 제어 — AGC OFF(MIC_AUDIO). 라이브러리 기본은 autoGainControl:true 라 정적 증폭 문제 발생.
+          getStream: () => navigator.mediaDevices.getUserMedia({ audio: MIC_AUDIO }),
+          resumeStream: () => navigator.mediaDevices.getUserMedia({ audio: MIC_AUDIO }),
+          pauseStream: async (stream) => { stream.getTracks().forEach((t) => t.stop()) },
+          // 발화 임계값(원복): AGC를 껐으니 0.6에서도 정적은 안 잡히고 실제 발화만 캡처됨.
           redemptionFrames: 14,
           minSpeechFrames: 4,
           positiveSpeechThreshold: 0.6,

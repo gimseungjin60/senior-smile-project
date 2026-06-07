@@ -38,16 +38,16 @@ class VoiceAgent:
         # Whisper STT가 노인 발음을 다양한 변형으로 인식할 수 있어 합리적 변형 폭넓게 등록.
         # "앨범" 단독은 TV/광고 오인식 위험으로 제외.
         self._wake_words = [
-            "앨범아", "앨범 아",
-            "앨버마", "앨버 마",
-            "앨봄아", "앨봄 아",
-            "앰범아", "앰버마",
-            "엘범아", "엘버마",
-            "앨범야", "앨범 야",
-            "앨범 아이", "앨버마이",
+            "앨범",                       # 코어 — 공백/접미 변형 모두 포섭 (시연 1~2m 인식률 우선)
+            "앨범아", "앨범 아", "앨범야", "앨범 야", "앨범 아이",
+            "앨버마", "앨버 마", "앨버마이", "앨버모",
+            "앨봄아", "앨봄 아", "앨봄",
+            "앰범아", "앰버마", "앰범",
+            "엘범아", "엘버마", "엘범",
+            "봄아", "범아",               # 실측 오인식형 ("내일 봄아" 등)
         ]
         self.is_conversation_active = False  # 호출어 감지 후 대화 모드
-        self._conversation_timeout = 10  # 무응답 시 대기 모드 복귀 (초)
+        self._conversation_timeout = 20  # 무응답 시 대기 모드 복귀 (초) — 어르신 응답 속도 배려
         self._last_interaction_time = 0
 
         # 감정 리포트 (세션 종료 시 main.py에서 읽어감)
@@ -289,8 +289,9 @@ class VoiceAgent:
                     self.pending_photo_url = doc_data['url']
 
     def _is_wake_word(self, text: str) -> bool:
-        """호출어가 포함되어 있는지 확인합니다."""
-        return any(w in text for w in self._wake_words)
+        """호출어가 포함되어 있는지 확인합니다. (공백 무시 매칭 — '앨범 아'/'앨범아' 동일 취급)"""
+        norm = text.replace(" ", "")
+        return any(w.replace(" ", "") in norm for w in self._wake_words)
 
     def _activate_conversation(self):
         """호출어 감지 → 대화 모드 진입"""
@@ -558,8 +559,23 @@ class VoiceAgent:
 
         print("[VoiceAgent] 대화 모드 종료")
 
+    # Whisper가 무음/잡음에 흔히 지어내는 환각 문구(유튜브 학습데이터 잔재).
+    # 명백한 것만 — 과하게 잡으면 정상 발화까지 버려 인식률이 더 나빠진다.
+    _HALLUCINATION_PHRASES = (
+        "시청해주셔서 감사합니다",
+        "시청해 주셔서 감사합니다",
+        "다음 영상에서 만나요",
+        "다음 영상에서",
+        "오늘 영상은 여기까지",
+        "좋아요와 구독",
+        "구독과 좋아요",
+        "구독 부탁",
+        "알림 설정",
+    )
+
     def _transcribe_audio(self, audio_bytes: bytes, fmt: str = "wav") -> str:
-        """브라우저에서 받은 오디오 bytes를 OpenAI Whisper API로 변환합니다."""
+        """브라우저에서 받은 오디오 bytes를 OpenAI Whisper API로 변환합니다.
+        무음/잡음 환각은 보수적으로 걸러 빈 문자열 반환(no_speech_prob>0.8 + 유튜브 환각 문구)."""
         if not audio_bytes:
             return ""
         tmp_path = None
@@ -572,9 +588,31 @@ class VoiceAgent:
                 transcript = self.openai_client.audio.transcriptions.create(
                     model="whisper-1",
                     file=audio_file,
-                    language="ko"
+                    language="ko",
+                    response_format="verbose_json",
+                    temperature=0,
                 )
-            return transcript.text.strip()
+            text = (getattr(transcript, "text", "") or "").strip()
+            if not text:
+                return ""
+
+            # 무음/잡음 거르기(보수적): 세그먼트 평균 no_speech_prob가 매우 높을 때만 폐기.
+            segments = getattr(transcript, "segments", None) or []
+            probs = []
+            for s in segments:
+                p = s.get("no_speech_prob") if isinstance(s, dict) else getattr(s, "no_speech_prob", None)
+                if p is not None:
+                    probs.append(p)
+            if probs and (sum(probs) / len(probs)) > 0.8:
+                print(f"[VoiceAgent] ⚠️ 무음/잡음 추정(no_speech_prob 높음) → 무시: '{text}'")
+                return ""
+
+            # 명백한 유튜브 환각 문구 차단.
+            if any(ph in text for ph in self._HALLUCINATION_PHRASES):
+                print(f"[VoiceAgent] ⚠️ 환각 문구 감지 → 무시: '{text}'")
+                return ""
+
+            return text
         except Exception as e:
             print(f"[VoiceAgent] OpenAI Whisper STT 에러: {e}")
             return ""
@@ -682,6 +720,9 @@ class VoiceAgent:
             print(f"[VOICE] TTS 에러: {e}")
         finally:
             self.current_subtitle = ""
+            # AI 발화가 끝난 시점부터 응답 대기시간 재계산 — 안내멘트/응답 재생 시간이
+            # 대화 타임아웃을 깎아먹어 "호출 후 바로 끊기는" 문제 방지.
+            self._last_interaction_time = time.time()
 
     def play_sound(self, filename: str, fallback_text: str):
         """준비된 MP3를 클라이언트가 /sounds/{filename}로 재생. 파일 없으면 TTS로 대체."""
