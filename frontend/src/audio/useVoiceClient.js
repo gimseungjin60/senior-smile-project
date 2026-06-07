@@ -155,7 +155,11 @@ export function useVoiceClient(enabled) {
           resumeStream: () => navigator.mediaDevices.getUserMedia({ audio: MIC_AUDIO }),
           pauseStream: async (stream) => { stream.getTracks().forEach((t) => t.stop()) },
           // 발화 임계값(원복): AGC를 껐으니 0.6에서도 정적은 안 잡히고 실제 발화만 캡처됨.
-          redemptionFrames: 14,
+          // 발화 끝 무음 대기. ⚠️ vad-web 0.0.30 은 redemptionFrames 를 직접 안 받고
+          // redemptionFrames = floor(redemptionMs / msPerFrame) 로 계산(model=legacy → frame 1536샘플=96ms).
+          // 기본 redemptionMs:1400(=14프레임). 1056(=11프레임)으로 낮춰 매 턴 ~0.3s 단축(호출어 체감 개선).
+          // 너무 낮추면 천천히 말하는 어르신 발화 끝이 잘림 → 잘리면 1150~1250(12~13프레임)으로 상향.
+          redemptionMs: 1056,
           minSpeechFrames: 4,
           positiveSpeechThreshold: 0.6,
           negativeSpeechThreshold: 0.4,
