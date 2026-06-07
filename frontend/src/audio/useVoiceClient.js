@@ -32,6 +32,7 @@ const MIC_AUDIO = { channelCount: 1, echoCancellation: true, noiseSuppression: t
 
 export function useVoiceClient(enabled) {
   const [connected, setConnected] = useState(false)
+  const [micOpen, setMicOpen] = useState(false)   // 실제 VAD 캡처 ON 여부(인디케이터 = 진짜 마이크 상태)
 
   const wsRef = useRef(null)
   const vadRef = useRef(null)
@@ -41,6 +42,23 @@ export function useVoiceClient(enabled) {
   const playingRef = useRef(false)
   const audioElRef = useRef(null)
   const pausedRef = useRef(false)   // 우리 의도로 VAD 캡처를 멈춘 상태인지
+
+  // 모바일 자동재생 잠금 해제: 첫 사용자 터치/클릭에서 무음 1회 재생 → 이후 TTS/beep .play() 허용.
+  // (모바일 크롬은 제스처 없이 소리나는 오디오 자동재생을 막음 — 갤탭에서 TTS 안 들리던 원인)
+  useEffect(() => {
+    const SILENT = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='
+    const unlock = () => {
+      try { new Audio(SILENT).play().catch(() => {}) } catch { /* 무시 */ }
+      window.removeEventListener('pointerdown', unlock)
+      window.removeEventListener('touchend', unlock)
+    }
+    window.addEventListener('pointerdown', unlock)
+    window.addEventListener('touchend', unlock)
+    return () => {
+      window.removeEventListener('pointerdown', unlock)
+      window.removeEventListener('touchend', unlock)
+    }
+  }, [])
 
   useEffect(() => {
     if (!enabled) return
@@ -56,6 +74,7 @@ export function useVoiceClient(enabled) {
     const pauseCapture = () => {
       clearTimeout(resumeTimerRef.current)
       pausedRef.current = true
+      setMicOpen(false)
       try { vadRef.current?.pause() } catch { /* VAD 미초기화 무시 */ }
     }
 
@@ -65,7 +84,7 @@ export function useVoiceClient(enabled) {
         // 재생 대기열이 완전히 빈 경우에만 캡처 재개
         if (!playingRef.current && playQueueRef.current.length === 0) {
           pausedRef.current = false
-          try { vadRef.current?.start() } catch { /* 무시 */ }
+          try { vadRef.current?.start(); setMicOpen(true) } catch { /* 무시 */ }
         }
       }, RESUME_GRACE_MS)
     }
@@ -152,7 +171,7 @@ export function useVoiceClient(enabled) {
       .then((vad) => {
         if (cancelled) { try { vad.destroy() } catch { /* 무시 */ } return }
         vadRef.current = vad
-        if (!pausedRef.current) vad.start()
+        if (!pausedRef.current) { vad.start(); setMicOpen(true) }
       })
       .catch((err) => {
         console.warn('[voice] VAD 초기화 실패 (마이크 권한/네트워크 확인):', err)
@@ -170,5 +189,5 @@ export function useVoiceClient(enabled) {
     }
   }, [enabled])
 
-  return { voiceConnected: connected }
+  return { voiceConnected: connected, micOpen }
 }

@@ -133,7 +133,8 @@ class VoiceAgent:
             "[금지 사항]\n"
             "- 의학적 진단이나 약 처방 조언 금지. 몸이 아프다고 하시면 '보호자께 알려드릴게요'로 안내.\n"
             "- 부정적·위협적 표현, 죽음/사고 농담, 정치/종교 주제 금지.\n"
-            "- 길게 설명하지 않기. 모르는 건 '잘 모르겠어요, 헤헤~'로 솔직하게.\n"
+            "- 길게 설명하지 않기. 날씨·뉴스 같은 모르는 사실은 '핸드폰으로 찾아보세요'처럼 미루지 말고, "
+            "'그건 잘 모르겠어요 헤헤~' 하고 바로 다정한 질문으로 대화를 자연스럽게 이어가세요.\n"
             "\n"
             "[감정 케어]\n"
             "- 어르신이 외롭거나 슬퍼하시면 공감을 먼저: '많이 적적하셨구나, 제가 옆에 있어요!'\n"
@@ -534,9 +535,9 @@ class VoiceAgent:
                 if not self.is_conversation_active:
                     if self._is_wake_word(user_text):
                         self._activate_conversation()
+                        # beep만 = "이제 말하세요" 신호. TTS 안내멘트 제거로 마이크가 ~4초 빨리 열림.
                         self._play_beep()
-                        self.current_subtitle = "네, 말씀하세요!"
-                        self.speak("네, 말씀하세요!")
+                        self._last_interaction_time = time.time()  # beep 직후부터 대기시간 계산
                         # 호출어와 함께 말한 내용이 있으면 처리
                         remaining = user_text
                         for w in self._wake_words:

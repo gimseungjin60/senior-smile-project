@@ -37,7 +37,7 @@ function App() {
   // 음성 클라이언트(브라우저 마이크↔/ws/voice). 페어링되면 가동.
   // NOTE: 세션 트리거(voice_agent 시작)는 현재 서버 카메라 얼굴감지 기반 → 클라우드에선
   // 재설계 필요(P5). 로컬 dev에선 PC 웹캠으로 세션이 시작되므로 end-to-end 테스트 가능.
-  useVoiceClient(pairing?.is_paired === true)
+  const { micOpen } = useVoiceClient(pairing?.is_paired === true)
 
   // 화면 전환 애니메이션
   useEffect(() => {
@@ -209,7 +209,7 @@ function App() {
           </div>
         )}
         <div className="side-voice-panel">
-          <SubtitleBar subtitle={subtitle} userText={userText} isListening={isListening} isConversationActive={isConversationActive} />
+          <SubtitleBar subtitle={subtitle} userText={userText} isListening={isListening} isConversationActive={isConversationActive} micOpen={micOpen} />
         </div>
       </div>
     </div>

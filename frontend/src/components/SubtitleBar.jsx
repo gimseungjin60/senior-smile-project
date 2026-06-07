@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import './SubtitleBar.css'
 
-function SubtitleBar({ subtitle, userText, isListening, isConversationActive }) {
+function SubtitleBar({ subtitle, userText, isListening, isConversationActive, micOpen }) {
   const [displayText, setDisplayText] = useState('')
   const prevSubtitle = useRef('')
   const typingTimer = useRef(null)
@@ -59,10 +59,17 @@ function SubtitleBar({ subtitle, userText, isListening, isConversationActive }) 
           <p className="vp-text">{displayText}</p>
         </div>
       ) : !userText && (
-        isConversationActive ? (
+        (isConversationActive && micOpen) ? (
+          // 실제 마이크가 열린 시점에만 표시 — 이걸 보고 말하면 앞부분 안 잘림
           <div className="vp-idle vp-idle--listening">
             <span className="vp-idle-icon">🎤</span>
             <span className="vp-idle-text">듣고 있어요 · 말씀하세요</span>
+          </div>
+        ) : isConversationActive ? (
+          // 대화 모드지만 마이크 아직 OFF(beep/응답 재생 중) — 잠깐 대기
+          <div className="vp-idle">
+            <span className="vp-idle-icon">⏳</span>
+            <span className="vp-idle-text">잠시만요…</span>
           </div>
         ) : (
           <div className="vp-idle">
