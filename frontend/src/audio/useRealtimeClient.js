@@ -100,7 +100,9 @@ export function useRealtimeClient(opts = {}) {
       }
 
       pc.onconnectionstatechange = () => {
-        if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
+        // 'disconnected'는 일시적(네트워크 깜빡임 → WebRTC가 보통 자동 복구)이라 그대로 둠.
+        // 진짜 끊긴 'failed' 일 때만 재연결 → 불필요한 재연결 루프 방지.
+        if (pc.connectionState === 'failed') {
           setActive(false); setStatus('error'); cleanupPeer(); scheduleReconnect()
         }
       }

@@ -171,7 +171,11 @@ function App() {
   useEffect(() => {
     if (pairing?.is_paired !== true) return
     if (rt.status !== 'idle') return
-    const arm = () => rt.start()
+    const arm = () => {
+      rt.start()
+      // 셋업 탭(제스처) 안에서 전체화면 진입 — 상단 배터리/하단 시스템바 숨김(키오스크)
+      try { document.documentElement.requestFullscreen?.() } catch { /* 무시 */ }
+    }
     window.addEventListener('pointerdown', arm, { once: true })
     return () => window.removeEventListener('pointerdown', arm)
   }, [pairing?.is_paired, rt.status, rt.start])
@@ -214,6 +218,18 @@ function App() {
       {/* 태블릿 카메라 → 백엔드(/ws/media/{device_id}) 송신. 페어링 후에만 마운트(카메라 권한 1회). */}
       {pairing?.is_paired === true && <MediaBridge />}
       {mediaQuery && <MediaPlayer query={mediaQuery} onClose={() => { setMediaQuery(null); rt.restoreOutput() }} />}
+
+      {/* 전체화면 종료(은은) — 평소엔 거의 안 보이고, 눌러서 키오스크 해제 */}
+      <button
+        onClick={() => { try { document.exitFullscreen?.() } catch { /* 무시 */ } }}
+        style={{
+          position: 'fixed', top: 4, right: 4, zIndex: 60,
+          width: 38, height: 38, border: 'none', borderRadius: 8,
+          background: 'rgba(0,0,0,0.2)', color: '#fff', fontSize: 13,
+          opacity: 0.25, cursor: 'pointer',
+        }}
+        title="전체화면 종료"
+      >⤓</button>
 
       {/* 메인 콘텐츠 — 음성 패널 고정 시 항상 오른쪽으로 밀림 */}
       <div className={`app-main ${(isConversationActive || PIN_VOICE_PANEL) ? 'app-main--pushed' : ''}`}>
