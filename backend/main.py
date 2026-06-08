@@ -709,6 +709,13 @@ def _get_or_create_detector(device_id: str) -> "FaceDetector":
     _device_listeners[device_id] = (dev_listener, pair_listener, lk_pub)
     dev_listener.start()
     pair_listener.start()
+    # LiveKit publisher 준비(start) — 동적 기기도 카메라 송출 가능하게.
+    # (이게 빠져서 _api=None → enable()이 무동작 → 동적기기 실시간카메라 안 됐음.
+    #  기본 기기는 lifespan에서 start하므로 러닝루프 없으면 스킵)
+    try:
+        asyncio.get_running_loop().create_task(lk_pub.start())
+    except RuntimeError:
+        pass
     logger.info(f"[DeviceRegistry] 새 기기 등록: {device_id}")
     return det
 
