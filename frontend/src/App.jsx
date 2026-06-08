@@ -51,7 +51,8 @@ function App() {
   // 기본 인사/일반 TTS는 useVoiceClient 내부 blocklist로 무시(Realtime 우선).
   useVoiceClient(pairing?.is_paired === true, {
     playbackOnly: true,
-    onPlaybackStart: () => rt.duck(),
+    // 예약 알림(pill_remind 등) 우선 — 재생 시작 시 트로트/미디어 닫고 Realtime 덕킹(겹침 방지)
+    onPlaybackStart: () => { rt.duck(); setMediaQuery(null) },
     onPlaybackEnd: () => rt.unduck(),
   })
 
