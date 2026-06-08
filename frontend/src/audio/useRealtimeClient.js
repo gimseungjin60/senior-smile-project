@@ -12,9 +12,11 @@ import { seniorHttpUrl } from '../utils/host'
 const HTTP_BASE = seniorHttpUrl()
 const RT_CALLS = 'https://api.openai.com/v1/realtime/calls?model=gpt-realtime'
 
-export function useRealtimeClient() {
+export function useRealtimeClient(opts = {}) {
   const [active, setActive] = useState(false)
   const [status, setStatus] = useState('idle')   // idle | connecting | live | error
+  const optsRef = useRef(opts)
+  optsRef.current = opts   // onStartGame/onStartStretch 등 콜백 최신값 유지(stale 방지)
   const pcRef = useRef(null)
   const msRef = useRef(null)
   const dcRef = useRef(null)
@@ -34,6 +36,8 @@ export function useRealtimeClient() {
     try {
       if (name === 'get_weather') out = await fetch(`${HTTP_BASE}/api/realtime/weather`).then((r) => r.json())
       else if (name === 'get_time') out = { now: new Date().toLocaleString('ko-KR') }
+      else if (name === 'start_game') { optsRef.current.onStartGame?.(); out = { ok: true, started: 'cognitive_game' } }
+      else if (name === 'start_stretch') { optsRef.current.onStartStretch?.(); out = { ok: true, started: 'stretching' } }
       else out = { error: 'unknown tool' }
     } catch (e) { out = { error: String(e) } }
     const dc = dcRef.current

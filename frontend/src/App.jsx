@@ -41,7 +41,10 @@ function App() {
   // 캔드 음원(pill_remind/greet 등) 재생 전용 — 마이크는 Realtime이 전담하므로 playbackOnly.
   useVoiceClient(pairing?.is_paired === true, { playbackOnly: true })
   // 대화 음성 = OpenAI Realtime (마이크 버튼으로 시작/정지). 7살 손주 페르소나+실데이터 도구는 토큰 세션에 포함.
-  const rt = useRealtimeClient()
+  const rt = useRealtimeClient({
+    onStartGame: () => setActivity('cognitive_game'),       // 기존 CognitiveGame 화면 재사용
+    onStartStretch: () => setActivity('stretching'),        // 기존 StretchingGuide 화면 재사용
+  })
 
   // 화면 전환 애니메이션
   useEffect(() => {

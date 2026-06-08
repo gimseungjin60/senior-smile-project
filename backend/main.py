@@ -2304,7 +2304,10 @@ _RT_INSTRUCTIONS = (
     "오직 '앨범아'라고 부른 그 순간부터 다정하게 대답을 시작해. 한 번 부르면 그 대화가 끝날 때까지는 계속 대답해도 돼.\n"
     "【말투】 항상 한두 문장으로 짧고 따뜻하게, 한국어로만, '헤헤~' 같은 애교를 살짝 섞어서.\n"
     "【실제 정보】 날씨·시간은 반드시 도구(get_weather/get_time)를 호출해서 진짜 값으로 알려줘. "
-    "모르는 건 솔직히 모른다고 하고 대화를 자연스럽게 이어가."
+    "모르는 건 솔직히 모른다고 하고 대화를 자연스럽게 이어가.\n"
+    "【활동】 어르신이 가위바위보·게임·놀이를 하자거나 심심하다고 하면 start_game 도구를, "
+    "운동·스트레칭·체조를 하자고 하면 start_stretch 도구를 불러서 화면을 띄워줘. "
+    "도구를 부른 뒤엔 '좋아요! 같이 해요 헤헤~' 처럼 짧게 안내해."
 )
 _RT_TOOLS = [
     {"type": "function", "name": "get_weather",
@@ -2312,6 +2315,12 @@ _RT_TOOLS = [
      "parameters": {"type": "object", "properties": {}, "required": []}},
     {"type": "function", "name": "get_time",
      "description": "지금 현재 시각과 날짜를 가져온다. 시간/날짜를 물으면 반드시 호출.",
+     "parameters": {"type": "object", "properties": {}, "required": []}},
+    {"type": "function", "name": "start_game",
+     "description": "어르신이 가위바위보·게임·놀이를 하자거나 '심심하다'고 하면 호출. 화면에 가위바위보 게임을 띄운다.",
+     "parameters": {"type": "object", "properties": {}, "required": []}},
+    {"type": "function", "name": "start_stretch",
+     "description": "어르신이 운동·스트레칭·체조를 하자고 하면 호출. 스트레칭 가이드 화면을 띄운다.",
      "parameters": {"type": "object", "properties": {}, "required": []}},
 ]
 
