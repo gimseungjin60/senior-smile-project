@@ -120,7 +120,20 @@ export function useRealtimeClient(opts = {}) {
     setActive(false); setStatus('idle')
   }, [])
 
+  // 덕킹: 캔드음원(pill_remind 등) 재생 중 Realtime을 잠시 죽임 — 목소리 겹침 + 마이크 피드백 방지.
+  const duck = useCallback(() => {
+    try { msRef.current?.getAudioTracks().forEach((t) => { t.enabled = false }) } catch { /* 무시 */ }
+    try { if (audioRef.current) audioRef.current.muted = true } catch { /* 무시 */ }
+    // 진행 중 AI 응답이 있으면 즉시 중단(겹쳐 들리지 않게). 없으면 에러 이벤트 무시됨.
+    try { const dc = dcRef.current; if (dc?.readyState === 'open') dc.send(JSON.stringify({ type: 'response.cancel' })) } catch { /* 무시 */ }
+  }, [])
+
+  const unduck = useCallback(() => {
+    try { msRef.current?.getAudioTracks().forEach((t) => { t.enabled = true }) } catch { /* 무시 */ }
+    try { if (audioRef.current) audioRef.current.muted = false } catch { /* 무시 */ }
+  }, [])
+
   useEffect(() => () => { armedRef.current = false; clearTimeout(reconnectRef.current); cleanupPeer() }, [])
 
-  return { active, status, start, stop }
+  return { active, status, start, stop, duck, unduck }
 }

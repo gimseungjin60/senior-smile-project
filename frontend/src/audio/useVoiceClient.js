@@ -33,6 +33,8 @@ const MIC_AUDIO = { channelCount: 1, echoCancellation: true, noiseSuppression: t
 
 export function useVoiceClient(enabled, opts = {}) {
   const playbackOnly = opts.playbackOnly === true   // true면 마이크/VAD 안 씀(캔드음원 재생만). Realtime이 마이크 전담.
+  const optsRef = useRef(opts)
+  optsRef.current = opts   // onPlaybackStart/End 콜백 최신값 유지(Realtime 덕킹 연동)
   const [connected, setConnected] = useState(false)
   const [micOpen, setMicOpen] = useState(false)   // 실제 VAD 캡처 ON 여부(인디케이터 = 진짜 마이크 상태)
 
@@ -96,6 +98,7 @@ export function useVoiceClient(enabled, opts = {}) {
       if (queue.length === 0) {
         playingRef.current = false
         scheduleResume()  // 연속 재생(beep→speak)이 끝난 뒤에만 VAD 재개
+        optsRef.current.onPlaybackEnd?.()   // 모든 재생 끝 → Realtime 덕킹 해제
         return
       }
       playingRef.current = true
@@ -119,6 +122,7 @@ export function useVoiceClient(enabled, opts = {}) {
     const enqueuePlay = (item) => {
       // 재생 지시 받는 즉시 캡처 정지 — 서버 is_speaking 윈도우와 정렬(에코 방지 1차 방어)
       pauseCapture()
+      if (!playingRef.current) optsRef.current.onPlaybackStart?.()   // 재생 시작 → Realtime 덕킹
       playQueueRef.current.push(item)
       if (!playingRef.current) playNext()
     }
@@ -132,6 +136,9 @@ export function useVoiceClient(enabled, opts = {}) {
         let data
         try { data = JSON.parse(e.data) } catch { return }
         if (data.type === 'speak' || data.type === 'beep') {
+          // playbackOnly: 기본 인사(greet_home)·호출음(beep)·일반 TTS(/tts/latest)는 Realtime이 전담 → 무시(겹침 방지).
+          // 예약 알림(pill_remind 등)만 재생 → 그건 onPlaybackStart에서 Realtime 덕킹.
+          if (playbackOnly && /greet_home|beep|\/tts\/latest/.test(data.url || '')) return
           enqueuePlay({ url: data.url, ts: data.ts })
         }
       }

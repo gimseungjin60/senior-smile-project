@@ -38,12 +38,17 @@ function App() {
   const transitionTimer = useRef(null)
   const reminderExitTimer = useRef(null)
 
-  // 캔드 음원(pill_remind/greet 등) 재생 전용 — 마이크는 Realtime이 전담하므로 playbackOnly.
-  useVoiceClient(pairing?.is_paired === true, { playbackOnly: true })
-  // 대화 음성 = OpenAI Realtime (마이크 버튼으로 시작/정지). 7살 손주 페르소나+실데이터 도구는 토큰 세션에 포함.
+  // 대화 음성 = OpenAI Realtime (마이크 전담). 7살 손주 페르소나+도구는 토큰 세션에 포함.
   const rt = useRealtimeClient({
     onStartGame: () => setActivity('cognitive_game'),       // 기존 CognitiveGame 화면 재사용
     onStartStretch: () => setActivity('stretching'),        // 기존 StretchingGuide 화면 재사용
+  })
+  // 캔드음원 재생 전용(playbackOnly). 예약 알림(pill_remind 등) 재생 중엔 Realtime 덕킹 → 목소리 겹침 방지.
+  // 기본 인사/일반 TTS는 useVoiceClient 내부 blocklist로 무시(Realtime 우선).
+  useVoiceClient(pairing?.is_paired === true, {
+    playbackOnly: true,
+    onPlaybackStart: () => rt.duck(),
+    onPlaybackEnd: () => rt.unduck(),
   })
 
   // 화면 전환 애니메이션
