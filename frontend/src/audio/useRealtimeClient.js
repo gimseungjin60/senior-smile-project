@@ -4,9 +4,10 @@ import { seniorHttpUrl } from '../utils/host'
 /**
  * OpenAI Realtime 음성 클라이언트 (브라우저 ↔ OpenAI 직접 WebRTC).
  * - 서버는 /api/realtime/token(ephemeral) 발급 + /api/realtime/weather(실데이터)만 담당.
- * - 오디오 스트림은 우리 서버를 안 거침(Render 부담↓). 7살 손주 페르소나/도구는 토큰 세션에 포함.
+ * - 오디오 스트림은 우리 서버를 안 거침(Render 부담↓). 7살 손주 페르소나/도구/호출어규칙은 토큰 세션에 포함.
  * - 마이크는 이 훅이 전담 → useVoiceClient 는 playbackOnly(캔드음원 재생)로만 병행.
- * - 모바일 자동재생: start() 가 사용자 탭(제스처) 안에서 호출되어야 마이크/오디오 허용됨.
+ * - 모바일 자동재생: arm()(=start) 는 사용자 제스처(셋업 1회 탭) 안에서 호출돼야 마이크/오디오 허용.
+ * - 한 번 켜지면 끊겨도 자동 재연결(시연 중 끊김 방지).
  */
 const HTTP_BASE = seniorHttpUrl()
 const RT_CALLS = 'https://api.openai.com/v1/realtime/calls?model=gpt-realtime'
@@ -18,16 +19,16 @@ export function useRealtimeClient() {
   const msRef = useRef(null)
   const dcRef = useRef(null)
   const audioRef = useRef(null)
+  const armedRef = useRef(false)          // 셋업 탭으로 켜진 상태(=유지+자동재연결 대상)
+  const reconnectRef = useRef(null)
+  const connectRef = useRef(null)
 
-  const stop = useCallback(() => {
+  const cleanupPeer = () => {
     try { msRef.current?.getTracks().forEach((t) => t.stop()) } catch { /* 무시 */ }
     try { pcRef.current?.close() } catch { /* 무시 */ }
-    try { if (audioRef.current) audioRef.current.srcObject = null } catch { /* 무시 */ }
     msRef.current = null; pcRef.current = null; dcRef.current = null
-    setActive(false); setStatus('idle')
-  }, [])
+  }
 
-  // 모델이 도구 호출 → 실데이터 가져와 결과 회신 → 모델이 그 값으로 말함
   const handleTool = useCallback(async (name, callId) => {
     let out
     try {
@@ -43,18 +44,23 @@ export function useRealtimeClient() {
     }
   }, [])
 
-  const start = useCallback(async () => {
+  const scheduleReconnect = useCallback(() => {
+    if (!armedRef.current) return
+    clearTimeout(reconnectRef.current)
+    reconnectRef.current = setTimeout(() => { if (armedRef.current) connectRef.current?.() }, 2000)
+  }, [])
+
+  const connect = useCallback(async () => {
     if (pcRef.current) return
     setStatus('connecting')
     try {
       const t = await fetch(`${HTTP_BASE}/api/realtime/token`).then((r) => r.json())
       const ek = t.value || (t.client_secret && t.client_secret.value)
-      if (!ek) { console.warn('[realtime] 토큰 실패', t); setStatus('error'); return }
+      if (!ek) { console.warn('[realtime] 토큰 실패', t); setStatus('error'); scheduleReconnect(); return }
 
       const pc = new RTCPeerConnection()
       pcRef.current = pc
 
-      // 원격(AI) 오디오 재생용 엘리먼트 (제스처 안에서 생성 → 모바일 자동재생 허용)
       let audio = audioRef.current
       if (!audio) { audio = new Audio(); audio.autoplay = true; audioRef.current = audio }
       pc.ontrack = (e) => { audio.srcObject = e.streams[0]; audio.play().catch(() => {}) }
@@ -74,25 +80,43 @@ export function useRealtimeClient() {
         } catch { /* 무시 */ }
       }
 
+      pc.onconnectionstatechange = () => {
+        const st = pc.connectionState
+        if (['failed', 'disconnected', 'closed'].includes(st)) {
+          setActive(false); setStatus('error')
+          cleanupPeer()
+          scheduleReconnect()   // armed면 자동 재연결
+        }
+      }
+
       const offer = await pc.createOffer()
       await pc.setLocalDescription(offer)
       const resp = await fetch(RT_CALLS, {
         method: 'POST', body: offer.sdp,
         headers: { Authorization: 'Bearer ' + ek, 'Content-Type': 'application/sdp' },
       })
-      if (!resp.ok) { console.warn('[realtime] SDP 실패', resp.status, await resp.text()); setStatus('error'); return }
+      if (!resp.ok) { console.warn('[realtime] SDP 실패', resp.status, await resp.text()); cleanupPeer(); setStatus('error'); scheduleReconnect(); return }
       await pc.setRemoteDescription({ type: 'answer', sdp: await resp.text() })
-
-      pc.onconnectionstatechange = () => {
-        if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) setStatus('error')
-      }
       setActive(true); setStatus('live')
     } catch (e) {
-      console.warn('[realtime] start 에러', e); setStatus('error'); stop()
+      console.warn('[realtime] connect 에러', e); cleanupPeer(); setStatus('error'); scheduleReconnect()
     }
-  }, [handleTool, stop])
+  }, [handleTool, scheduleReconnect])
 
-  useEffect(() => () => stop(), [stop])  // 언마운트 시 정리
+  connectRef.current = connect
+
+  // 셋업 1회 탭에서 호출(제스처) → 이후 armed 유지 + 자동재연결
+  const start = useCallback(() => { armedRef.current = true; connect() }, [connect])
+
+  const stop = useCallback(() => {
+    armedRef.current = false
+    clearTimeout(reconnectRef.current)
+    cleanupPeer()
+    try { if (audioRef.current) audioRef.current.srcObject = null } catch { /* 무시 */ }
+    setActive(false); setStatus('idle')
+  }, [])
+
+  useEffect(() => () => { armedRef.current = false; clearTimeout(reconnectRef.current); cleanupPeer() }, [])
 
   return { active, status, start, stop }
 }

@@ -154,6 +154,16 @@ function App() {
     return () => window.removeEventListener('keydown', handleKey)
   }, [])
 
+  // 셋업 1회 탭으로 Realtime 언락(브라우저 자동재생 정책). 발표자가 무대 세팅 때 화면 아무데나 한 번 탭 →
+  // 이후 어르신은 터치 없이 "앨범아"로 대화. 페어링됐고 아직 안 켜졌을 때만 1회 대기.
+  useEffect(() => {
+    if (pairing?.is_paired !== true) return
+    if (rt.status !== 'idle') return
+    const arm = () => rt.start()
+    window.addEventListener('pointerdown', arm, { once: true })
+    return () => window.removeEventListener('pointerdown', arm)
+  }, [pairing?.is_paired, rt.status, rt.start])
+
   function dismissReminder() {
     setReminderExiting(true)
     clearTimeout(reminderExitTimer.current)
@@ -219,20 +229,14 @@ function App() {
           </div>
         )}
         <div className="side-voice-panel">
-          <button
-            onClick={() => (rt.active ? rt.stop() : rt.start())}
-            disabled={rt.status === 'connecting'}
-            style={{
-              width: '100%', padding: '16px', fontSize: '20px', fontWeight: 700,
-              borderRadius: '12px', border: 'none', marginBottom: '12px', cursor: 'pointer',
-              color: '#fff', background: rt.active ? '#e11d48' : '#2563eb',
-            }}
-          >
-            {rt.status === 'connecting' ? '연결 중…' : rt.active ? '● 대화 중 — 끝내기' : '🎤 대화하기'}
-          </button>
-          {rt.status === 'error' && (
-            <div style={{ color: '#c00', fontSize: 13, marginBottom: 8 }}>연결 오류 — 버튼 다시 누르세요</div>
-          )}
+          {/* 은은한 상태표시(어르신 눈에 안 띄게). 셋업 1회 탭 후 '듣는 중' 유지 */}
+          <div style={{ textAlign: 'center', fontSize: 12, fontWeight: 600, marginBottom: 10,
+            opacity: 0.7, color: rt.status === 'live' ? '#16a34a' : '#9ca3af' }}>
+            {rt.status === 'live' ? '● 듣는 중'
+              : rt.status === 'connecting' ? '연결 중…'
+              : rt.status === 'error' ? '재연결 중…'
+              : '● 대기 — 화면을 한 번 터치'}
+          </div>
           <SubtitleBar subtitle={subtitle} userText={userText} isListening={isListening}
             isConversationActive={rt.active || isConversationActive} micOpen={rt.active} />
         </div>
