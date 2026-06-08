@@ -3,9 +3,24 @@
  * 유튜브 검색 임베드(첫 결과 자동재생) + 큰 X 버튼(수동 종료). 음성 "꺼줘"(stop_media)로도 종료됨.
  * (검색 임베드가 막히면 query→videoId 매핑 방식으로 교체 가능)
  */
+// 검색어 → 고정 유튜브 영상 ID. listType=search 임베드는 유튜브가 막아서(deprecated) 불안정 →
+// 자주 쓰는 요청은 ID로 박아 100% 재생. 매칭 안 되면 검색임베드로 폴백.
+const VIDEO_MAP = [
+  { keywords: ['땡벌', '트로트', '뽕짝', '옛날 노래', '옛날노래', '노래', '음악'], id: '_HMdj960T84' },
+]
+function resolveSrc(query) {
+  const q = (query || '').toLowerCase()
+  for (const m of VIDEO_MAP) {
+    if (m.keywords.some((k) => q.includes(k.toLowerCase()))) {
+      return `https://www.youtube.com/embed/${m.id}?autoplay=1&rel=0`
+    }
+  }
+  return `https://www.youtube.com/embed?listType=search&list=${encodeURIComponent(query)}&autoplay=1&rel=0`
+}
+
 export default function MediaPlayer({ query, onClose }) {
   if (!query) return null
-  const src = `https://www.youtube.com/embed?listType=search&list=${encodeURIComponent(query)}&autoplay=1&rel=0`
+  const src = resolveSrc(query)
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 50,
