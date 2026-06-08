@@ -886,13 +886,13 @@ def _medication_tick():
                 except Exception as e:
                     logger.warning(f"[medication_tick] 프론트 브로드캐스트 실패: {e}")
 
-                # 음성 발화 (대화 중이 아닐 때만)
+                # 음성 발화 (시연: 시간 되면 항상 — 화면 알림과 pill_remind.mp3 동시 재생)
+                # 기존 게이팅(not is_running and idle) 제거: 어르신이 화면 앞에 있어도 소리 나게.
                 try:
                     with det._voice_lock:
                         if det.voice_agent is None:
                             det.voice_agent = det._make_voice_agent()
-                        if not det.voice_agent.is_running and det.current_status == "idle":
-                            det.voice_agent.trigger_pill_reminder()
+                        det.voice_agent.trigger_pill_reminder()
                 except Exception as e:
                     logger.warning(f"[medication_tick] 음성 발화 실패: {e}")
 
@@ -2291,6 +2291,125 @@ async def get_sessions(limit: int = 20):
         return {"sessions": sessions}
     except Exception as e:
         return {"sessions": [], "error": str(e)}
+
+
+# ── OpenAI Realtime (병행 PoC — 기존 /ws/voice·페어링·카메라 안 건드림) ──────────
+# 구조: 브라우저↔OpenAI 직접 WebRTC. 서버는 ephemeral 토큰 발급 + 실데이터 도구(날씨)만.
+# 오디오 스트림은 Render를 안 거침 → Free 부담 적음. 갤탭 https 검증 페이지: /realtime-poc
+_RT_MODEL = "gpt-realtime"
+_RT_INSTRUCTIONS = (
+    "너는 '앨범이'라는 이름의 일곱 살 손주야. 한국 할머니·할아버지와 다정하게 한국어로만 "
+    "이야기해. 항상 한두 문장으로 짧고 따뜻하게, '헤헤~' 같은 애교를 살짝 섞어서. "
+    "날씨·시간처럼 실제 정보는 반드시 도구(get_weather/get_time)를 호출해서 진짜 값으로 알려줘. "
+    "모르는 건 솔직히 모른다고 하고 대화를 자연스럽게 이어가."
+)
+_RT_TOOLS = [
+    {"type": "function", "name": "get_weather",
+     "description": "현재 실제 날씨(기온/상태)를 가져온다. 날씨를 물으면 반드시 호출.",
+     "parameters": {"type": "object", "properties": {}, "required": []}},
+    {"type": "function", "name": "get_time",
+     "description": "지금 현재 시각과 날짜를 가져온다. 시간/날짜를 물으면 반드시 호출.",
+     "parameters": {"type": "object", "properties": {}, "required": []}},
+]
+
+
+@app.get("/api/realtime/token")
+async def realtime_token():
+    """ephemeral 토큰 발급 (API 키는 브라우저로 안 나감). 브라우저가 이걸로 OpenAI WebRTC 연결."""
+    async with httpx.AsyncClient(timeout=20) as c:
+        r = await c.post(
+            "https://api.openai.com/v1/realtime/client_secrets",
+            headers={"Authorization": f"Bearer {config.OPENAI_API_KEY}",
+                     "Content-Type": "application/json"},
+            json={"session": {"type": "realtime", "model": _RT_MODEL,
+                              "instructions": _RT_INSTRUCTIONS,
+                              "tools": _RT_TOOLS, "tool_choice": "auto"}},
+        )
+    return Response(content=r.text, media_type="application/json", status_code=r.status_code)
+
+
+@app.get("/api/realtime/weather")
+async def realtime_weather():
+    """실제 날씨 (OpenWeather) — function_call_output 으로 모델에 전달됨."""
+    if not config.WEATHER_API_KEY:
+        return {"error": "WEATHER_API_KEY 미설정"}
+    async with httpx.AsyncClient(timeout=10) as c:
+        r = await c.get("https://api.openweathermap.org/data/2.5/weather",
+                        params={"q": config.WEATHER_CITY, "appid": config.WEATHER_API_KEY,
+                                "units": "metric", "lang": "kr"})
+    if r.status_code != 200:
+        return {"error": f"weather api {r.status_code}"}
+    d = r.json()
+    return {"city": config.WEATHER_CITY, "temp_c": round(d["main"]["temp"]),
+            "feels_like_c": round(d["main"]["feels_like"]),
+            "description": d["weather"][0]["description"]}
+
+
+_RT_HTML = """<!doctype html><html lang=ko><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>앨범이 Realtime</title></head>
+<body style="font-family:sans-serif;padding:24px;max-width:680px;margin:auto">
+<h2>앨범이 — Realtime 음성 대화 (실데이터)</h2>
+<button id=start style="font-size:22px;padding:14px 22px;border-radius:10px">🎤 시작 (누르고 말 걸기)</button>
+<button id=stop style="font-size:16px;padding:10px;margin-left:8px" disabled>■ 정지</button>
+<p style="color:#666">예: "오늘 날씨 어때?", "지금 몇 시야?", "심심해"</p>
+<pre id=log style="white-space:pre-wrap;background:#f4f4f4;padding:12px;border-radius:8px;min-height:140px"></pre>
+<audio id=aud autoplay></audio>
+<script>
+const logEl=document.getElementById('log')
+const log=(m)=>{logEl.textContent+=m+"\\n"; logEl.scrollTop=logEl.scrollHeight}
+let pc, ms, dc
+async function handleTool(name, call_id){
+  let out
+  try{
+    if(name==='get_weather') out=await fetch('/api/realtime/weather').then(r=>r.json())
+    else if(name==='get_time') out={now:new Date().toLocaleString('ko-KR')}
+    else out={error:'unknown tool'}
+  }catch(e){ out={error:String(e)} }
+  log('🔧 '+name+' → '+JSON.stringify(out))
+  dc.send(JSON.stringify({type:'conversation.item.create',
+    item:{type:'function_call_output', call_id, output:JSON.stringify(out)}}))
+  dc.send(JSON.stringify({type:'response.create'}))
+}
+document.getElementById('start').onclick=async()=>{
+  document.getElementById('start').disabled=true
+  try{
+    log('① 토큰 요청...')
+    const t=await fetch('/api/realtime/token').then(r=>r.json())
+    const ek=t.value || (t.client_secret&&t.client_secret.value)
+    if(!ek){log('✗ 토큰 실패: '+JSON.stringify(t)); return}
+    log('② 토큰 OK')
+    pc=new RTCPeerConnection()
+    pc.ontrack=(e)=>{document.getElementById('aud').srcObject=e.streams[0]; log('④ 오디오 수신 → 재생')}
+    ms=await navigator.mediaDevices.getUserMedia({audio:true})
+    pc.addTrack(ms.getTracks()[0])
+    dc=pc.createDataChannel('oai-events')
+    dc.onmessage=(e)=>{ try{const o=JSON.parse(e.data)
+      if(o.type==='response.function_call_arguments.done') handleTool(o.name,o.call_id)
+      else if(o.type==='error') log('   ⚠ '+JSON.stringify(o.error||o).slice(0,160))
+    }catch{} }
+    log('③ 마이크 OK, 연결 중...')
+    const offer=await pc.createOffer(); await pc.setLocalDescription(offer)
+    const resp=await fetch('https://api.openai.com/v1/realtime/calls?model=gpt-realtime',{
+      method:'POST', body:offer.sdp,
+      headers:{Authorization:'Bearer '+ek,'Content-Type':'application/sdp'}})
+    if(!resp.ok){log('✗ SDP 실패 HTTP '+resp.status+'\\n'+(await resp.text()).slice(0,300)); return}
+    await pc.setRemoteDescription({type:'answer', sdp:await resp.text()})
+    log('⑤ 연결 완료! 말해보세요. (날씨/시간은 실제 값)')
+    document.getElementById('stop').disabled=false
+  }catch(err){log('✗ 에러: '+err.message)}
+}
+document.getElementById('stop').onclick=()=>{
+  try{ms&&ms.getTracks().forEach(t=>t.stop())}catch{}
+  try{pc&&pc.close()}catch{}
+  log('정지'); document.getElementById('start').disabled=false; document.getElementById('stop').disabled=true
+}
+</script></body></html>"""
+
+
+@app.get("/realtime-poc", response_class=HTMLResponse)
+async def realtime_poc_page():
+    return HTMLResponse(_RT_HTML)
 
 
 @app.get("/dashboard", response_class=HTMLResponse)
