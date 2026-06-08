@@ -180,6 +180,13 @@ function App() {
     return () => window.removeEventListener('pointerdown', arm)
   }, [pairing?.is_paired, rt.status, rt.start])
 
+  // 새 사진 도착 → 25초 뒤 자동 닫힘(또는 탭). 상태 무관하게 오버레이로 표시.
+  useEffect(() => {
+    if (!newPhotoUrl) return
+    const t = setTimeout(() => setNewPhotoUrl(null), 25000)
+    return () => clearTimeout(t)
+  }, [newPhotoUrl])
+
   function dismissReminder() {
     setReminderExiting(true)
     clearTimeout(reminderExitTimer.current)
@@ -218,6 +225,23 @@ function App() {
       {/* 태블릿 카메라 → 백엔드(/ws/media/{device_id}) 송신. 페어링 후에만 마운트(카메라 권한 1회). */}
       {pairing?.is_paired === true && <MediaBridge />}
       {mediaQuery && <MediaPlayer query={mediaQuery} onClose={() => { setMediaQuery(null); rt.restoreOutput() }} />}
+
+      {/* 보호자 사진 도착 — 상태 무관 풀스크린 오버레이(active 아니어도 보임). 탭/25초 후 닫힘 */}
+      {newPhotoUrl && (
+        <div
+          onClick={() => setNewPhotoUrl(null)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 45, cursor: 'pointer',
+            background: 'rgba(0,0,0,0.9)', display: 'flex', flexDirection: 'column',
+            alignItems: 'center', justifyContent: 'center', gap: 16,
+          }}
+        >
+          <div style={{ color: '#fff', fontSize: 26, fontWeight: 800 }}>📷 가족이 사진을 보냈어요!</div>
+          <img src={newPhotoUrl} alt="새 사진"
+            style={{ maxWidth: '85vw', maxHeight: '68vh', borderRadius: 16, objectFit: 'contain' }} />
+          <div style={{ color: 'rgba(255,255,255,0.6)', fontSize: 15 }}>화면을 터치하면 닫혀요</div>
+        </div>
+      )}
 
       {/* 전체화면 종료(은은) — 평소엔 거의 안 보이고, 눌러서 키오스크 해제 */}
       <button
