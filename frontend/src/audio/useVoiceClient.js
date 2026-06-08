@@ -31,7 +31,8 @@ const RESUME_GRACE_MS = 500
 // echoCancellation/noiseSuppression 은 유지(스피커 유입·잡음 억제).
 const MIC_AUDIO = { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: false }
 
-export function useVoiceClient(enabled) {
+export function useVoiceClient(enabled, opts = {}) {
+  const playbackOnly = opts.playbackOnly === true   // true면 마이크/VAD 안 씀(캔드음원 재생만). Realtime이 마이크 전담.
   const [connected, setConnected] = useState(false)
   const [micOpen, setMicOpen] = useState(false)   // 실제 VAD 캡처 ON 여부(인디케이터 = 진짜 마이크 상태)
 
@@ -143,8 +144,8 @@ export function useVoiceClient(enabled) {
     }
     connect()
 
-    // Silero VAD — 동적 import로 ort-web(무거움)을 메인 번들에서 분리, 가동 시에만 로드
-    import('@ricky0123/vad-web')
+    // Silero VAD — playbackOnly(재생 전용)면 마이크/VAD 전부 스킵 (Realtime이 마이크 전담, 충돌 방지)
+    if (!playbackOnly) import('@ricky0123/vad-web')
       .then(({ MicVAD, utils }) =>
         MicVAD.new({
           // wasm/worklet/모델은 CDN에서 로드(번들 부담↓, 버전 고정)

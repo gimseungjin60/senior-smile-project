@@ -11,6 +11,7 @@ import MediaBridge from './components/MediaBridge'
 import { seniorWsUrl } from './utils/host'
 import { getDeviceId } from './utils/deviceId'
 import { useVoiceClient } from './audio/useVoiceClient'
+import { useRealtimeClient } from './audio/useRealtimeClient'
 import './App.css'
 
 // 이 태블릿의 고유 device_id 로 서버에 연결 (멀티기기: 한 백엔드가 기기별 독립 처리)
@@ -37,9 +38,10 @@ function App() {
   const transitionTimer = useRef(null)
   const reminderExitTimer = useRef(null)
 
-  // 음성 클라이언트(브라우저 마이크↔/ws/voice/{device_id}). 페어링되면 가동.
-  // 서버는 음성 WS 연결 시 카메라 없이도 voice agent를 능동 시작 → 호출어 동작(클라우드 대응).
-  const { micOpen } = useVoiceClient(pairing?.is_paired === true)
+  // 캔드 음원(pill_remind/greet 등) 재생 전용 — 마이크는 Realtime이 전담하므로 playbackOnly.
+  useVoiceClient(pairing?.is_paired === true, { playbackOnly: true })
+  // 대화 음성 = OpenAI Realtime (마이크 버튼으로 시작/정지). 7살 손주 페르소나+실데이터 도구는 토큰 세션에 포함.
+  const rt = useRealtimeClient()
 
   // 화면 전환 애니메이션
   useEffect(() => {
@@ -217,7 +219,22 @@ function App() {
           </div>
         )}
         <div className="side-voice-panel">
-          <SubtitleBar subtitle={subtitle} userText={userText} isListening={isListening} isConversationActive={isConversationActive} micOpen={micOpen} />
+          <button
+            onClick={() => (rt.active ? rt.stop() : rt.start())}
+            disabled={rt.status === 'connecting'}
+            style={{
+              width: '100%', padding: '16px', fontSize: '20px', fontWeight: 700,
+              borderRadius: '12px', border: 'none', marginBottom: '12px', cursor: 'pointer',
+              color: '#fff', background: rt.active ? '#e11d48' : '#2563eb',
+            }}
+          >
+            {rt.status === 'connecting' ? '연결 중…' : rt.active ? '● 대화 중 — 끝내기' : '🎤 대화하기'}
+          </button>
+          {rt.status === 'error' && (
+            <div style={{ color: '#c00', fontSize: 13, marginBottom: 8 }}>연결 오류 — 버튼 다시 누르세요</div>
+          )}
+          <SubtitleBar subtitle={subtitle} userText={userText} isListening={isListening}
+            isConversationActive={rt.active || isConversationActive} micOpen={rt.active} />
         </div>
       </div>
     </div>
