@@ -2307,7 +2307,9 @@ _RT_INSTRUCTIONS = (
     "모르는 건 솔직히 모른다고 하고 대화를 자연스럽게 이어가.\n"
     "【활동】 어르신이 가위바위보·게임·놀이를 하자거나 심심하다고 하면 start_game 도구를, "
     "운동·스트레칭·체조를 하자고 하면 start_stretch 도구를 불러서 화면을 띄워줘. "
-    "도구를 부른 뒤엔 '좋아요! 같이 해요 헤헤~' 처럼 짧게 안내해."
+    "도구를 부른 뒤엔 '좋아요! 같이 해요 헤헤~' 처럼 짧게 안내해.\n"
+    "【미디어】 노래·음악·트로트·영상을 틀어달라고 하면 play_media(query=들은 검색어)를 호출하고, "
+    "'꺼줘/그만/멈춰'라고 하면 stop_media를 호출해. 음악이 나오는 동안엔 명확히 끄라고 할 때만 반응해."
 )
 _RT_TOOLS = [
     {"type": "function", "name": "get_weather",
@@ -2321,6 +2323,14 @@ _RT_TOOLS = [
      "parameters": {"type": "object", "properties": {}, "required": []}},
     {"type": "function", "name": "start_stretch",
      "description": "어르신이 운동·스트레칭·체조를 하자고 하면 호출. 스트레칭 가이드 화면을 띄운다.",
+     "parameters": {"type": "object", "properties": {}, "required": []}},
+    {"type": "function", "name": "play_media",
+     "description": "어르신이 노래·음악·트로트·영상을 틀어달라고 하면 호출. query에 들은 검색어를 넣는다(예: '트로트 메들리').",
+     "parameters": {"type": "object",
+                    "properties": {"query": {"type": "string", "description": "유튜브 검색어 (예: 트로트 메들리, 동요)"}},
+                    "required": ["query"]}},
+    {"type": "function", "name": "stop_media",
+     "description": "재생 중인 노래/영상을 끈다. 어르신이 '꺼줘/그만/멈춰'라고 하면 호출.",
      "parameters": {"type": "object", "properties": {}, "required": []}},
 ]
 

@@ -8,6 +8,7 @@ import ReminderScreen from './components/ReminderScreen'
 import CognitiveGame from './components/CognitiveGame'
 import StretchingGuide from './components/StretchingGuide'
 import MediaBridge from './components/MediaBridge'
+import MediaPlayer from './components/MediaPlayer'
 import { seniorWsUrl } from './utils/host'
 import { getDeviceId } from './utils/deviceId'
 import { useVoiceClient } from './audio/useVoiceClient'
@@ -35,6 +36,7 @@ function App() {
   const [activeReminder, setActiveReminder] = useState(null)
   const [reminderExiting, setReminderExiting] = useState(false)
   const [activity, setActivity] = useState(null)  // 'cognitive_game' | 'stretching' | null
+  const [mediaQuery, setMediaQuery] = useState(null)  // Realtime play_media → 유튜브 재생
   const transitionTimer = useRef(null)
   const reminderExitTimer = useRef(null)
 
@@ -42,6 +44,8 @@ function App() {
   const rt = useRealtimeClient({
     onStartGame: () => setActivity('cognitive_game'),       // 기존 CognitiveGame 화면 재사용
     onStartStretch: () => setActivity('stretching'),        // 기존 StretchingGuide 화면 재사용
+    onPlayMedia: (q) => setMediaQuery(q),                   // 유튜브 재생
+    onStopMedia: () => setMediaQuery(null),                 // 음성 "꺼줘" → 종료
   })
   // 캔드음원 재생 전용(playbackOnly). 예약 알림(pill_remind 등) 재생 중엔 Realtime 덕킹 → 목소리 겹침 방지.
   // 기본 인사/일반 TTS는 useVoiceClient 내부 blocklist로 무시(Realtime 우선).
@@ -199,16 +203,17 @@ function App() {
 
   // 활동(게임/스트레칭)이 활성이고 응급이 아니면 메인 화면을 덮음
   if (activity === 'cognitive_game' && !isEmergency) {
-    return <CognitiveGame onExit={() => setActivity(null)} />
+    return <CognitiveGame onExit={() => { setActivity(null); rt.notifyEvent('(방금 가위바위보 게임을 마치고 화면을 닫았어요. 이제 평소처럼 대화해요.)') }} />
   }
   if (activity === 'stretching' && !isEmergency) {
-    return <StretchingGuide onExit={() => setActivity(null)} />
+    return <StretchingGuide onExit={() => { setActivity(null); rt.notifyEvent('(방금 스트레칭을 마치고 화면을 닫았어요. 이제 평소처럼 대화해요.)') }} />
   }
 
   return (
     <div className="app">
       {/* 태블릿 카메라 → 백엔드(/ws/media/{device_id}) 송신. 페어링 후에만 마운트(카메라 권한 1회). */}
       {pairing?.is_paired === true && <MediaBridge />}
+      {mediaQuery && <MediaPlayer query={mediaQuery} onClose={() => { setMediaQuery(null); rt.restoreOutput() }} />}
 
       {/* 메인 콘텐츠 — 음성 패널 고정 시 항상 오른쪽으로 밀림 */}
       <div className={`app-main ${(isConversationActive || PIN_VOICE_PANEL) ? 'app-main--pushed' : ''}`}>
@@ -238,9 +243,12 @@ function App() {
         )}
         <div className="side-voice-panel">
           {/* 은은한 상태표시(어르신 눈에 안 띄게). 셋업 1회 탭 후 '듣는 중' 유지 */}
-          <div style={{ textAlign: 'center', fontSize: 12, fontWeight: 600, marginBottom: 10,
-            opacity: 0.7, color: rt.status === 'live' ? '#16a34a' : '#9ca3af' }}>
-            {rt.status === 'live' ? '● 듣는 중'
+          <div style={{ textAlign: 'center', fontWeight: 700, marginBottom: 10,
+            fontSize: (rt.status === 'live' && rt.idle) ? 16 : 12,
+            opacity: (rt.status === 'live' && rt.idle) ? 1 : 0.7,
+            color: rt.status === 'live' ? (rt.idle ? '#2563eb' : '#16a34a') : '#9ca3af' }}>
+            {rt.status === 'live'
+              ? (rt.idle ? '🔔 "앨범아" 하고 불러주세요' : '● 듣는 중')
               : rt.status === 'connecting' ? '연결 중…'
               : rt.status === 'error' ? '재연결 중…'
               : '● 대기 — 화면을 한 번 터치'}
