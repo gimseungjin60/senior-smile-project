@@ -64,7 +64,8 @@ PILL_TIME = "09:00"
 # ==========================================
 # 날씨 설정
 # ==========================================
-WEATHER_API_KEY = os.environ.get("WEATHER_API_KEY", "")
+# 기본값 fallback — Render 환경변수 미설정 시에도 날씨 동작(시연용). 시연 후 키 교체 권장.
+WEATHER_API_KEY = os.environ.get("WEATHER_API_KEY", "a4834eb87d58bad358d3f654c8f31da3")
 WEATHER_CITY = os.environ.get("WEATHER_CITY", "Seoul")
 
 # ==========================================
