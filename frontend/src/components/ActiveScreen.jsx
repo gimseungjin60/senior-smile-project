@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { aibumHttpUrl } from '../utils/host'
 import './ActiveScreen.css'
 
 const DEFAULT_SLIDES = [
@@ -8,7 +9,8 @@ const DEFAULT_SLIDES = [
   { emoji: '🎵', message: '좋아하는 노래를 들으며 쉬어가세요' },
 ]
 
-const BACKEND_URL = 'http://localhost:8001'
+// 보호자 백엔드(8001)를 시연 환경에서 안 돌려도 fetch 실패는 catch로 안전 처리됨 → 기본 슬라이드 표시
+const BACKEND_URL = aibumHttpUrl()
 const PHOTO_POLL_INTERVAL = 60000
 const SLIDE_INTERVAL = 8000
 const NEW_PHOTO_DISPLAY_TIME = 20000

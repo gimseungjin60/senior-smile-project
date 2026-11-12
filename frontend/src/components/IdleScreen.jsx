@@ -1,7 +1,9 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { seniorHttpUrl } from '../utils/host'
+import { getDeviceId } from '../utils/deviceId'
 import './IdleScreen.css'
 
-const BACKEND_API = 'http://localhost:8000'
+const BACKEND_API = seniorHttpUrl()
 const WEATHER_POLL_INTERVAL = 600000 // 10분마다 날씨 갱신
 
 function formatTime(date) {
@@ -67,15 +69,22 @@ function IdleScreen({ pairing }) {
     return () => clearInterval(timer)
   }, [])
 
-  // 페어링 코드 요청
+  // 페어링 코드 요청 — in-flight 가드로 중복 호출 방지
+  const inFlight = useRef(false)
   const requestCode = useCallback(async () => {
+    if (inFlight.current) return
+    inFlight.current = true
     try {
-      const res = await fetch(`${BACKEND_API}/api/pairing/code`, { method: 'POST' })
+      const res = await fetch(`${BACKEND_API}/api/pairing/code?device_id=${getDeviceId()}`, { method: 'POST' })
       const data = await res.json()
-      setPairingCode(data.code)
-      setCodeRemaining(data.expires_in)
+      if (data?.code) {
+        setPairingCode(data.code)
+        setCodeRemaining(data.expires_in ?? 300)
+      }
     } catch {
       console.warn('[Pairing] 코드 요청 실패')
+    } finally {
+      inFlight.current = false
     }
   }, [])
 
@@ -94,38 +103,21 @@ function IdleScreen({ pairing }) {
     return () => clearInterval(timer)
   }, [pairingCode])
 
-  // pairing이 미완료 상태일 때 REST API로 최신 상태 폴링
-  const [localPairing, setLocalPairing] = useState(null)
+  // 미페어링 + 코드 없으면 자동 생성. pairingCode 변화에도 반응(코드 만료 후 재발급).
+  const isPairedVal = pairing?.is_paired
   useEffect(() => {
-    if (pairing?.is_paired) { setLocalPairing(pairing); return }
-    async function fetchPairing() {
-      try {
-        const res = await fetch(`${BACKEND_API}/api/pairing/status`)
-        const data = await res.json()
-        setLocalPairing(data)
-      } catch { /* 무시 */ }
-    }
-    fetchPairing()
-    const timer = setInterval(fetchPairing, 3000)
-    return () => clearInterval(timer)
-  }, [pairing?.is_paired])
-
-  const activePairing = pairing?.is_paired ? pairing : (localPairing || pairing)
-
-  // 미페어링 + 코드 없으면 자동 생성
-  const isPairedVal = activePairing?.is_paired
-  useEffect(() => {
-    if (isPairedVal === false && !pairingCode && codeRemaining <= 0) {
+    if (isPairedVal === false && !pairingCode) {
       requestCode()
     }
     if (isPairedVal === true) {
       setPairingCode(null)
       setCodeRemaining(0)
     }
-  }, [isPairedVal]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isPairedVal, pairingCode, requestCode])
 
-  const isPaired = activePairing?.is_paired
-  const showPairing = activePairing && !isPaired
+  const isPaired = pairing?.is_paired === true
+  const isConnecting = pairing == null
+  const showPairing = !isPaired && !isConnecting
 
   return (
     <div className={`idle-screen ${isNight ? 'idle-screen--night' : ''}`}>
@@ -137,7 +129,12 @@ function IdleScreen({ pairing }) {
         </div>
         <div className="date">{formatDate(now)}</div>
 
-        {showPairing ? (
+        {isConnecting ? (
+          <div className="pairing-card">
+            <p className="pairing-title">서버에 연결 중입니다...</p>
+            <p className="pairing-timer">잠시만 기다려주세요</p>
+          </div>
+        ) : showPairing ? (
           <div className="pairing-card">
             <p className="pairing-title">보호자 앱에서 아래 코드를 입력하세요</p>
             {pairingCode ? (
@@ -161,16 +158,16 @@ function IdleScreen({ pairing }) {
                 코드 생성하기
               </button>
             )}
-            <p className="pairing-device-id">기기 ID: {activePairing?.device_id}</p>
+            <p className="pairing-device-id">기기 ID: {pairing?.device_id || '—'}</p>
           </div>
-        ) : (
+        ) : weather && weather.temperature && weather.temperature !== '--' ? (
           <div className="idle-weather-card">
             <span className="weather-icon">{weather.icon}</span>
             <span className="weather-temp">{weather.temperature}</span>
             <span className="weather-divider" />
             <span className="weather-condition">{weather.condition}</span>
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   )

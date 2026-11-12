@@ -21,12 +21,17 @@ def _get_or_create_device_id() -> str:
     _device_file.write_text(json.dumps({"device_id": device_id}), encoding="utf-8")
     return device_id
 
-DEVICE_ID = _get_or_create_device_id()
+# 클라우드(Render 등) 배포 시 컨테이너 파일시스템이 휘발성이라 device_id.json 이
+# 재배포마다 새로 생성되면 페어링이 깨진다. DEVICE_ID env 가 있으면 그 값을 고정 사용.
+DEVICE_ID = os.environ.get("DEVICE_ID") or _get_or_create_device_id()
 
 # ==========================================
 # 기본 설정
 # ==========================================
-CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX", 0))
+# 카메라 소스: "tablet"(시니어 프론트가 /ws/media 로 프레임 업로드, 클라우드 기본)
+#            "usb"(라즈베리파이 등 서버에 물린 USB 웹캠을 cv2.VideoCapture 로 직접 사용)
+CAMERA_SOURCE = os.environ.get("CAMERA_SOURCE", "tablet").lower()
+CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX", 0))  # CAMERA_SOURCE=usb 경로에서만 사용
 FRAME_INTERVAL = 0.1          # ~10 FPS
 CORS_ORIGINS = ["*"]
 
@@ -38,7 +43,7 @@ DETECTION_CONFIRM_FRAMES = 3  # N프레임 연속 감지 후 세션 시작
 
 # 상태 전환 타이밍
 GREETING_DURATION = 5.0       # GREETING → ACTIVE 자동 전환 (초)
-ACTIVE_IDLE_TIMEOUT = 30.0    # ACTIVE에서 얼굴 미감지 후 IDLE 복귀 (초)
+ACTIVE_IDLE_TIMEOUT = 3600.0  # ACTIVE에서 얼굴 미감지 후 IDLE 복귀 (초, 1시간). 태블릿 전면카메라가 얼굴을 자주 놓쳐 대화가 끊기는 것 방지
 
 # 모델 경로
 MODELS_DIR = Path(__file__).parent / "models"
@@ -59,7 +64,8 @@ PILL_TIME = "09:00"
 # ==========================================
 # 날씨 설정
 # ==========================================
-WEATHER_API_KEY = os.environ.get("WEATHER_API_KEY", "")
+# 기본값 fallback — Render 환경변수 미설정 시에도 날씨 동작(시연용). 시연 후 키 교체 권장.
+WEATHER_API_KEY = os.environ.get("WEATHER_API_KEY", "a4834eb87d58bad358d3f654c8f31da3")
 WEATHER_CITY = os.environ.get("WEATHER_CITY", "Seoul")
 
 # ==========================================

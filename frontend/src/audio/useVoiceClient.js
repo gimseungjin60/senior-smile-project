@@ -1,0 +1,206 @@
+import { useEffect, useRef, useState } from 'react'
+import { seniorWsUrl, seniorHttpUrl } from '../utils/host'
+import { getDeviceId } from '../utils/deviceId'
+// @ricky0123/vad-web(+onnxruntime-web)은 무거워서(~400KB) 동적 import로 메인 번들에서 분리.
+// 페어링되어 이 훅이 실제 가동될 때만 로드된다.
+
+/**
+ * 시니어 음성 클라이언트 (브라우저 마이크 ↔ 서버 /ws/voice).
+ * (docs/voice-cloud-refactor-design.md §3, §2.5 half-duplex)
+ *
+ * - 입력: Silero VAD(@ricky0123/vad-web)로 발화 구간 분할 → encodeWAV(16kHz) → binary 업로드
+ * - 출력: 서버 {type:'speak'|'beep', url} 수신 → <audio> 재생
+ * - half-duplex(서버 is_speaking과 정렬):
+ *     · 재생 지시 수신 즉시 VAD 정지(캡처 OFF) → 마이크가 스피커 소리를 못 잡음(에코 방지)
+ *     · 항목마다 재생 종료 시 playback_done 송신(서버는 emit마다 1:1로 대기)
+ *     · 마지막 재생 후 grace 동안 새 재생 없으면 VAD 재개 → beep→speak 연속을 한 정지창으로 묶음
+ *
+ * ⚠️ 이 훅의 진짜 검증은 실제 갤탭 마이크로 도는 end-to-end 통합 테스트다. (스크립트로 'PASS' 못 만듦)
+ */
+
+const WS_URL = seniorWsUrl(`/ws/voice/${getDeviceId()}`)
+// TTS/효과음 재생 베이스. 서버가 보내는 url은 /tts/latest, /sounds/... 같은 서버 기준 절대경로라
+// 로컬 dev(프론트 5173 ↔ 백엔드 8000)에서 상대경로로 두면 5173으로 요청돼 404 → 무음.
+const HTTP_BASE = seniorHttpUrl()
+const VAD_VERSION = '0.0.30'        // package.json과 일치 유지
+const ORT_VERSION = '1.26.0'
+// 마지막 재생 후 VAD 재개 유예. beep→speak가 연달아 오므로 그 사이 캡처가 켜지지 않게 묶는다.
+const RESUME_GRACE_MS = 500
+// 마이크 캡처 제약. autoGainControl: false 가 핵심 —
+// 조용한 환경에서 AGC가 정적의 노이즈 플로어를 증폭해 VAD가 끊임없이 '발화'로 오판 → Whisper 환각 폭주.
+// echoCancellation/noiseSuppression 은 유지(스피커 유입·잡음 억제).
+const MIC_AUDIO = { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: false }
+
+export function useVoiceClient(enabled, opts = {}) {
+  const playbackOnly = opts.playbackOnly === true   // true면 마이크/VAD 안 씀(캔드음원 재생만). Realtime이 마이크 전담.
+  const optsRef = useRef(opts)
+  optsRef.current = opts   // onPlaybackStart/End 콜백 최신값 유지(Realtime 덕킹 연동)
+  const [connected, setConnected] = useState(false)
+  const [micOpen, setMicOpen] = useState(false)   // 실제 VAD 캡처 ON 여부(인디케이터 = 진짜 마이크 상태)
+
+  const wsRef = useRef(null)
+  const vadRef = useRef(null)
+  const reconnectTimerRef = useRef(null)
+  const resumeTimerRef = useRef(null)
+  const playQueueRef = useRef([])
+  const playingRef = useRef(false)
+  const audioElRef = useRef(null)
+  const pausedRef = useRef(false)   // 우리 의도로 VAD 캡처를 멈춘 상태인지
+
+  // 모바일 자동재생 잠금 해제: 첫 사용자 터치/클릭에서 무음 1회 재생 → 이후 TTS/beep .play() 허용.
+  // (모바일 크롬은 제스처 없이 소리나는 오디오 자동재생을 막음 — 갤탭에서 TTS 안 들리던 원인)
+  useEffect(() => {
+    const SILENT = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='
+    const unlock = () => {
+      try { new Audio(SILENT).play().catch(() => {}) } catch { /* 무시 */ }
+      window.removeEventListener('pointerdown', unlock)
+      window.removeEventListener('touchend', unlock)
+    }
+    window.addEventListener('pointerdown', unlock)
+    window.addEventListener('touchend', unlock)
+    return () => {
+      window.removeEventListener('pointerdown', unlock)
+      window.removeEventListener('touchend', unlock)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!enabled) return
+    let cancelled = false
+
+    const sendControl = (action) => {
+      const ws = wsRef.current
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'control', action }))
+      }
+    }
+
+    const pauseCapture = () => {
+      clearTimeout(resumeTimerRef.current)
+      pausedRef.current = true
+      setMicOpen(false)
+      try { vadRef.current?.pause() } catch { /* VAD 미초기화 무시 */ }
+    }
+
+    const scheduleResume = () => {
+      clearTimeout(resumeTimerRef.current)
+      resumeTimerRef.current = setTimeout(() => {
+        // 재생 대기열이 완전히 빈 경우에만 캡처 재개
+        if (!playingRef.current && playQueueRef.current.length === 0) {
+          pausedRef.current = false
+          try { vadRef.current?.start(); setMicOpen(true) } catch { /* 무시 */ }
+        }
+      }, RESUME_GRACE_MS)
+    }
+
+    const playNext = () => {
+      const queue = playQueueRef.current
+      if (queue.length === 0) {
+        playingRef.current = false
+        scheduleResume()  // 연속 재생(beep→speak)이 끝난 뒤에만 VAD 재개
+        optsRef.current.onPlaybackEnd?.()   // 모든 재생 끝 → Realtime 덕킹 해제
+        return
+      }
+      playingRef.current = true
+      const item = queue.shift()
+      // 서버 기준 절대경로(/tts/latest 등)에 백엔드 베이스를 붙여 cross-origin 재생.
+      const absUrl = item.url.startsWith('http') ? item.url : HTTP_BASE + item.url
+      const sep = absUrl.includes('?') ? '&' : '?'
+      const audio = new Audio(absUrl + sep + 'ts=' + (item.ts || Date.now()))
+      audioElRef.current = audio
+      // 서버는 emit마다 playback_done을 기다림(is_speaking 1:1) → 항목마다 정확히 1회 송신.
+      // 재생 실패(onerror)에도 송신해야 서버가 timeout까지 멈추지 않음.
+      const onDone = () => {
+        sendControl('playback_done')
+        playNext()
+      }
+      audio.onended = onDone
+      audio.onerror = onDone
+      audio.play().catch(onDone)
+    }
+
+    const enqueuePlay = (item) => {
+      // 재생 지시 받는 즉시 캡처 정지 — 서버 is_speaking 윈도우와 정렬(에코 방지 1차 방어)
+      pauseCapture()
+      if (!playingRef.current) optsRef.current.onPlaybackStart?.()   // 재생 시작 → Realtime 덕킹
+      playQueueRef.current.push(item)
+      if (!playingRef.current) playNext()
+    }
+
+    const connect = () => {
+      const ws = new WebSocket(WS_URL)
+      ws.binaryType = 'arraybuffer'
+      wsRef.current = ws
+      ws.onopen = () => { if (!cancelled) setConnected(true) }
+      ws.onmessage = (e) => {
+        let data
+        try { data = JSON.parse(e.data) } catch { return }
+        if (data.type === 'speak' || data.type === 'beep') {
+          // playbackOnly: 기본 인사(greet_home)·호출음(beep)·일반 TTS(/tts/latest)는 Realtime이 전담 → 무시(겹침 방지).
+          // 예약 알림(pill_remind 등)만 재생 → 그건 onPlaybackStart에서 Realtime 덕킹.
+          if (playbackOnly && /greet_home|beep|\/tts\/latest/.test(data.url || '')) return
+          enqueuePlay({ url: data.url, ts: data.ts })
+        }
+      }
+      ws.onclose = () => {
+        if (cancelled) return
+        setConnected(false)
+        reconnectTimerRef.current = setTimeout(connect, 3000)
+      }
+      ws.onerror = () => { try { ws.close() } catch { /* 무시 */ } }
+    }
+    connect()
+
+    // Silero VAD — playbackOnly(재생 전용)면 마이크/VAD 전부 스킵 (Realtime이 마이크 전담, 충돌 방지)
+    if (!playbackOnly) import('@ricky0123/vad-web')
+      .then(({ MicVAD, utils }) =>
+        MicVAD.new({
+          // wasm/worklet/모델은 CDN에서 로드(번들 부담↓, 버전 고정)
+          baseAssetPath: `https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@${VAD_VERSION}/dist/`,
+          onnxWASMBasePath: `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`,
+          // 마이크 스트림 직접 제어 — AGC OFF(MIC_AUDIO). 라이브러리 기본은 autoGainControl:true 라 정적 증폭 문제 발생.
+          getStream: () => navigator.mediaDevices.getUserMedia({ audio: MIC_AUDIO }),
+          resumeStream: () => navigator.mediaDevices.getUserMedia({ audio: MIC_AUDIO }),
+          pauseStream: async (stream) => { stream.getTracks().forEach((t) => t.stop()) },
+          // 발화 임계값(원복): AGC를 껐으니 0.6에서도 정적은 안 잡히고 실제 발화만 캡처됨.
+          // 발화 끝 무음 대기. ⚠️ vad-web 0.0.30 은 redemptionFrames 를 직접 안 받고
+          // redemptionFrames = floor(redemptionMs / msPerFrame) 로 계산(model=legacy → frame 1536샘플=96ms).
+          // 기본 redemptionMs:1400(=14프레임). 1056(=11프레임)으로 낮춰 매 턴 ~0.3s 단축(호출어 체감 개선).
+          // 너무 낮추면 천천히 말하는 어르신 발화 끝이 잘림 → 잘리면 1150~1250(12~13프레임)으로 상향.
+          redemptionMs: 1056,
+          minSpeechFrames: 4,
+          positiveSpeechThreshold: 0.6,
+          negativeSpeechThreshold: 0.4,
+          onSpeechEnd: (audio) => {
+            // half-duplex 2차 방어: 정지/재생 중이면 업로드 금지(서버도 is_speaking로 드롭하지만
+            // 네트워크로 새어 가지 않게 클라에서 먼저 차단)
+            if (cancelled || pausedRef.current || playingRef.current) return
+            const ws = wsRef.current
+            if (!ws || ws.readyState !== WebSocket.OPEN) return
+            ws.send(utils.encodeWAV(audio))  // 16kHz mono WAV ArrayBuffer → binary 프레임
+          },
+        }),
+      )
+      .then((vad) => {
+        if (cancelled) { try { vad.destroy() } catch { /* 무시 */ } return }
+        vadRef.current = vad
+        if (!pausedRef.current) { vad.start(); setMicOpen(true) }
+      })
+      .catch((err) => {
+        console.warn('[voice] VAD 초기화 실패 (마이크 권한/네트워크 확인):', err)
+      })
+
+    return () => {
+      cancelled = true
+      clearTimeout(resumeTimerRef.current)
+      clearTimeout(reconnectTimerRef.current)
+      try { vadRef.current?.destroy() } catch { /* 무시 */ }
+      vadRef.current = null
+      try { audioElRef.current?.pause() } catch { /* 무시 */ }
+      try { wsRef.current?.close() } catch { /* 무시 */ }
+      wsRef.current = null
+    }
+  }, [enabled])
+
+  return { voiceConnected: connected, micOpen }
+}

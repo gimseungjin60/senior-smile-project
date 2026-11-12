@@ -1,7 +1,9 @@
-# Python 가상환경
+# Python 가상환경 / 캐시
 backend/.venv/
-backend/__pycache__/
-backend/*.pyc
+backend/venv/
+backend/.venv-*/
+**/__pycache__/
+*.pyc
 
 # macOS
 .DS_Store
@@ -14,6 +16,12 @@ backend/*.pyc
 frontend/node_modules/
 frontend/dist/
 
+# 프론트 빌드물 — 백엔드가 서빙(vite outDir).
+# Render 단일 URL(프론트+백엔드 동일출처) 서빙을 위해 git에 포함한다.
+# (.dockerignore 는 frontend/ 만 제외하고 backend/dist 는 포함 → COPY backend/ 로 이미지에 들어감)
+# 갱신 절차: cd frontend && npm run build → backend/dist 산출 → 커밋.
+# backend/dist/
+
 # 보안 키/환경변수
 backend/.env
 backend/serviceAccountKey.json
@@ -21,3 +29,14 @@ backend/device_id.json
 backend/users_local.json
 backend/voice_messages/
 *.env
+
+# 런타임 상태 / 임시 파일
+backend/greeting_state.json
+backend/sounds/temp_*
+
+# 대용량 모델 (필요 시 LFS로 별도 관리)
+backend/models/*.onnx
+
+# Claude 로컬 작업 메모
+.claude/plans/
+.claude/settings.local.json

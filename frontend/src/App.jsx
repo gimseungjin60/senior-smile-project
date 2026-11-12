@@ -5,10 +5,20 @@ import ActiveScreen from './components/ActiveScreen'
 import StatusIndicator from './components/StatusIndicator'
 import SubtitleBar from './components/SubtitleBar'
 import ReminderScreen from './components/ReminderScreen'
+import CognitiveGame from './components/CognitiveGame'
+import StretchingGuide from './components/StretchingGuide'
+import MediaBridge from './components/MediaBridge'
+import MediaPlayer from './components/MediaPlayer'
+import { seniorWsUrl } from './utils/host'
+import { getDeviceId } from './utils/deviceId'
+import { useVoiceClient } from './audio/useVoiceClient'
+import { useRealtimeClient } from './audio/useRealtimeClient'
 import './App.css'
 
-const WS_URL = 'ws://localhost:8000/ws'
+// 이 태블릿의 고유 device_id 로 서버에 연결 (멀티기기: 한 백엔드가 기기별 독립 처리)
+const WS_URL = seniorWsUrl(`/ws/${getDeviceId()}`)
 const TRANSITION_MS = 500
+const PIN_VOICE_PANEL = true  // 시연: 음성 패널 항상 고정 표시(마이크/듣는 상태 가시화)
 
 function App() {
   const [status, setStatus] = useState('idle')
@@ -22,12 +32,29 @@ function App() {
   const [newPhotoUrl, setNewPhotoUrl] = useState(null)
   const [isEmergency, setIsEmergency] = useState(false)
   const [pairing, setPairing] = useState(null)
-  const pairingRef = useRef(null)
   const [isConversationActive, setIsConversationActive] = useState(false)
   const [activeReminder, setActiveReminder] = useState(null)
   const [reminderExiting, setReminderExiting] = useState(false)
+  const [activity, setActivity] = useState(null)  // 'cognitive_game' | 'stretching' | null
+  const [mediaQuery, setMediaQuery] = useState(null)  // Realtime play_media → 유튜브 재생
   const transitionTimer = useRef(null)
   const reminderExitTimer = useRef(null)
+
+  // 대화 음성 = OpenAI Realtime (마이크 전담). 7살 손주 페르소나+도구는 토큰 세션에 포함.
+  const rt = useRealtimeClient({
+    onStartGame: () => setActivity('cognitive_game'),       // 기존 CognitiveGame 화면 재사용
+    onStartStretch: () => setActivity('stretching'),        // 기존 StretchingGuide 화면 재사용
+    onPlayMedia: (q) => setMediaQuery(q),                   // 유튜브 재생
+    onStopMedia: () => setMediaQuery(null),                 // 음성 "꺼줘" → 종료
+  })
+  // 캔드음원 재생 전용(playbackOnly). 예약 알림(pill_remind 등) 재생 중엔 Realtime 덕킹 → 목소리 겹침 방지.
+  // 기본 인사/일반 TTS는 useVoiceClient 내부 blocklist로 무시(Realtime 우선).
+  useVoiceClient(pairing?.is_paired === true, {
+    playbackOnly: true,
+    // 예약 알림(pill_remind 등) 우선 — 재생 시작 시 트로트/미디어 닫고 Realtime 덕킹(겹침 방지)
+    onPlaybackStart: () => { rt.duck(); setMediaQuery(null) },
+    onPlaybackEnd: () => rt.unduck(),
+  })
 
   // 화면 전환 애니메이션
   useEffect(() => {
@@ -69,12 +96,23 @@ function App() {
           return
         }
 
-        if (data.type === 'pairing') {
-          if (data.pairing) { setPairing(data.pairing); pairingRef.current = data.pairing }
-          if (data.paired === true && data.status) setStatus(data.status)
-          if (data.paired === false) setStatus('idle')
-          return
+        // pairing 키가 들어오면 (type==='pairing' 이든 초기 메시지든) 동일값 가드로 update
+        if (data.pairing) {
+          setPairing((prev) => {
+            const next = data.pairing
+            if (prev
+                && prev.is_paired === next.is_paired
+                && prev.pairing_code === next.pairing_code
+                && prev.device_id === next.device_id) {
+              return prev  // 동일 reference 유지 → 불필요한 re-render 방지
+            }
+            return next
+          })
         }
+        if (data.type === 'pairing') return
+
+        // photos 리스너: 보호자가 사진 업로드 시 {newPhotoUrl} 단독 메시지 (type 없음)
+        if (data.newPhotoUrl) setNewPhotoUrl(data.newPhotoUrl)
 
         if (data.type === 'voice') {
           setSubtitle(data.subtitle || '')
@@ -84,20 +122,17 @@ function App() {
           if (data.isEmergency) setIsEmergency(true)
           if (data.newPhotoUrl) setNewPhotoUrl(data.newPhotoUrl)
           if (data.isConversationActive !== undefined) setIsConversationActive(data.isConversationActive)
+          if (data.activity) setActivity(data.activity)
           return
         }
 
-        if (data.status) {
-          const currentPairing = data.pairing || pairingRef.current
-          const isPaired = currentPairing ? currentPairing.is_paired : false
-          if (!isPaired && data.status !== 'idle') return
-          setStatus(data.status)
-        }
+        if (data.status) setStatus(data.status)
+        if (data.activity !== undefined) setActivity(data.activity || null)
         if (data.subtitle !== undefined) setSubtitle(data.subtitle || '')
         if (data.isListening !== undefined) setIsListening(data.isListening || false)
         if (data.isPillTaken !== undefined) setIsPillTaken(data.isPillTaken || false)
         if (data.isConversationActive !== undefined) setIsConversationActive(data.isConversationActive || false)
-        if (data.pairing) { setPairing(data.pairing); pairingRef.current = data.pairing }
+        // pairing 키는 위의 동일값 가드 setPairing 에서 이미 처리됨 (catch-all 불필요).
       }
       ws.onclose = () => {
         setConnected(false)
@@ -124,10 +159,34 @@ function App() {
         message: '잊지 말고 꼭 챙겨 드세요!', time: '09:00',
       })
       if (e.key === 'l') { setIsListening(true); setSubtitle('네, 말씀하세요!'); setUserText('앨범아') }
+      if (e.key === 'g') setActivity('cognitive_game')
+      if (e.key === 's') setActivity('stretching')
+      if (e.key === 'x') setActivity(null)
     }
     window.addEventListener('keydown', handleKey)
     return () => window.removeEventListener('keydown', handleKey)
   }, [])
+
+  // 셋업 1회 탭으로 Realtime 언락(브라우저 자동재생 정책). 발표자가 무대 세팅 때 화면 아무데나 한 번 탭 →
+  // 이후 어르신은 터치 없이 "앨범아"로 대화. 페어링됐고 아직 안 켜졌을 때만 1회 대기.
+  useEffect(() => {
+    if (pairing?.is_paired !== true) return
+    if (rt.status !== 'idle') return
+    const arm = () => {
+      rt.start()
+      // 셋업 탭(제스처) 안에서 전체화면 진입 — 상단 배터리/하단 시스템바 숨김(키오스크)
+      try { document.documentElement.requestFullscreen?.() } catch { /* 무시 */ }
+    }
+    window.addEventListener('pointerdown', arm, { once: true })
+    return () => window.removeEventListener('pointerdown', arm)
+  }, [pairing?.is_paired, rt.status, rt.start])
+
+  // 새 사진 도착 → 25초 뒤 자동 닫힘(또는 탭). 상태 무관하게 오버레이로 표시.
+  useEffect(() => {
+    if (!newPhotoUrl) return
+    const t = setTimeout(() => setNewPhotoUrl(null), 25000)
+    return () => clearTimeout(t)
+  }, [newPhotoUrl])
 
   function dismissReminder() {
     setReminderExiting(true)
@@ -139,15 +198,66 @@ function App() {
   }
 
   function renderBaseContent() {
-    if (visibleStatus === 'idle') return <IdleScreen pairing={pairing} />
+    // 페어링 안 됐거나 연결 중이거나 idle 이면 IdleScreen 단일 분기 (React reconciliation 보장)
+    const showIdle = !pairing || pairing.is_paired !== true || visibleStatus === 'idle'
+    if (showIdle) return <IdleScreen pairing={pairing} />
     if (visibleStatus === 'greeting') return <GreetScreen />
     return <ActiveScreen newPhotoUrl={newPhotoUrl} />
   }
 
+  // 응급 상황은 게임/스트레칭 중이라도 강제로 종료 — App 레벨에서 컴포넌트 언마운트
+  useEffect(() => {
+    if (isEmergency && activity) {
+      console.log('[EMERGENCY] 게임/스트레칭 강제 종료')
+      setActivity(null)
+    }
+  }, [isEmergency, activity])
+
+  // 활동(게임/스트레칭)이 활성이고 응급이 아니면 메인 화면을 덮음
+  if (activity === 'cognitive_game' && !isEmergency) {
+    return <CognitiveGame onExit={() => { setActivity(null); rt.notifyEvent('(방금 가위바위보 게임을 마치고 화면을 닫았어요. 이제 평소처럼 대화해요.)') }} />
+  }
+  if (activity === 'stretching' && !isEmergency) {
+    return <StretchingGuide onExit={() => { setActivity(null); rt.notifyEvent('(방금 스트레칭을 마치고 화면을 닫았어요. 이제 평소처럼 대화해요.)') }} />
+  }
+
   return (
     <div className="app">
-      {/* 메인 콘텐츠 — 호출어 인식 시 오른쪽으로 밀림 */}
-      <div className={`app-main ${isConversationActive ? 'app-main--pushed' : ''}`}>
+      {/* 태블릿 카메라 → 백엔드(/ws/media/{device_id}) 송신. 페어링 후에만 마운트(카메라 권한 1회). */}
+      {pairing?.is_paired === true && <MediaBridge />}
+      {mediaQuery && <MediaPlayer query={mediaQuery} onClose={() => { setMediaQuery(null); rt.restoreOutput() }} />}
+
+      {/* 보호자 사진 도착 — 상태 무관 풀스크린 오버레이(active 아니어도 보임). 탭/25초 후 닫힘 */}
+      {newPhotoUrl && (
+        <div
+          onClick={() => setNewPhotoUrl(null)}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 45, cursor: 'pointer',
+            background: 'rgba(0,0,0,0.9)', display: 'flex', flexDirection: 'column',
+            alignItems: 'center', justifyContent: 'center', gap: 16,
+          }}
+        >
+          <div style={{ color: '#fff', fontSize: 26, fontWeight: 800 }}>📷 가족이 사진을 보냈어요!</div>
+          <img src={newPhotoUrl} alt="새 사진"
+            style={{ maxWidth: '85vw', maxHeight: '68vh', borderRadius: 16, objectFit: 'contain' }} />
+          <div style={{ color: 'rgba(255,255,255,0.6)', fontSize: 15 }}>화면을 터치하면 닫혀요</div>
+        </div>
+      )}
+
+      {/* 전체화면 종료(은은) — 평소엔 거의 안 보이고, 눌러서 키오스크 해제 */}
+      <button
+        onClick={() => { try { document.exitFullscreen?.() } catch { /* 무시 */ } }}
+        style={{
+          position: 'fixed', top: 4, right: 4, zIndex: 60,
+          width: 38, height: 38, border: 'none', borderRadius: 8,
+          background: 'rgba(0,0,0,0.2)', color: '#fff', fontSize: 13,
+          opacity: 0.25, cursor: 'pointer',
+        }}
+        title="전체화면 종료"
+      >⤓</button>
+
+      {/* 메인 콘텐츠 — 음성 패널 고정 시 항상 오른쪽으로 밀림 */}
+      <div className={`app-main ${(isConversationActive || PIN_VOICE_PANEL) ? 'app-main--pushed' : ''}`}>
         {/* 기본 화면 — 항상 마운트 상태 유지 */}
         <div key={visibleStatus} className={`screen-anim screen-anim--${phase}`}>
           {renderBaseContent()}
@@ -161,8 +271,8 @@ function App() {
         )}
       </div>
 
-      {/* 음성 패널 — 호출어 인식 시 오른쪽에서 슬라이드인 */}
-      <div className={`voice-side-panel ${isConversationActive ? 'voice-side-panel--open' : ''}`}>
+      {/* 음성 패널 — 시연용 항상 고정(PIN_VOICE_PANEL) */}
+      <div className={`voice-side-panel ${(isConversationActive || PIN_VOICE_PANEL) ? 'voice-side-panel--open' : ''}`}>
         <div className="side-status">
           <StatusIndicator connected={connected} status={status} />
         </div>
@@ -173,7 +283,19 @@ function App() {
           </div>
         )}
         <div className="side-voice-panel">
-          <SubtitleBar subtitle={subtitle} userText={userText} isListening={isListening} />
+          {/* 은은한 상태표시(어르신 눈에 안 띄게). 셋업 1회 탭 후 '듣는 중' 유지 */}
+          <div style={{ textAlign: 'center', fontWeight: 700, marginBottom: 10,
+            fontSize: (rt.status === 'live' && rt.idle) ? 16 : 12,
+            opacity: (rt.status === 'live' && rt.idle) ? 1 : 0.7,
+            color: rt.status === 'live' ? (rt.idle ? '#2563eb' : '#16a34a') : '#9ca3af' }}>
+            {rt.status === 'live'
+              ? (rt.idle ? '🔔 "앨범아" 하고 불러주세요' : '● 듣는 중')
+              : rt.status === 'connecting' ? '연결 중…'
+              : rt.status === 'error' ? '재연결 중…'
+              : '● 대기 — 화면을 한 번 터치'}
+          </div>
+          <SubtitleBar subtitle={subtitle} userText={userText} isListening={isListening}
+            isConversationActive={rt.active || isConversationActive} micOpen={rt.active} />
         </div>
       </div>
     </div>

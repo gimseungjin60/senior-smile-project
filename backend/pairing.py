@@ -9,6 +9,7 @@ import random
 import time
 import logging
 import threading
+from datetime import datetime, timezone
 from typing import Optional
 
 import firebase_admin
@@ -23,8 +24,8 @@ PAIRING_CODE_EXPIRY = 300  # 5분
 
 
 class PairingManager:
-    def __init__(self):
-        self.device_id = config.DEVICE_ID
+    def __init__(self, device_id: str = ""):
+        self.device_id = device_id or config.DEVICE_ID
         self.pairing_code: Optional[str] = None
         self.code_expires_at: float = 0
         self.is_paired = False
@@ -40,39 +41,56 @@ class PairingManager:
             except Exception as e:
                 logger.warning(f"[Pairing] Firebase 연결 실패: {e}")
 
-        # 기존 페어링 상태 복구
+        # 서버 재시작 시 Firestore에서 페어링 상태 복구
         self._restore_pairing()
 
     def _restore_pairing(self):
-        """서버 재시작 시 기존 페어링 상태를 Firebase에서 복구"""
+        """서버 재시작 시 기존 페어링 상태를 Firebase에서 복구.
+        source of truth는 pairedUids 배열 (다중 보호자 지원). 비어있으면 미페어링."""
         if not self.db:
             return
         try:
             doc = self.db.collection("devices").document(self.device_id).get()
             if doc.exists:
                 data = doc.to_dict()
-                if data.get("paired"):
+                paired_uids = data.get("pairedUids", []) or []
+                if len(paired_uids) > 0:
                     self.is_paired = True
                     self.family_id = data.get("family_id")
-                    logger.info(f"[Pairing] 기존 페어링 복구: family={self.family_id}")
+                    logger.info(f"[Pairing] 기존 페어링 복구: {len(paired_uids)}명 (family={self.family_id})")
+                else:
+                    logger.info("[Pairing] pairedUids 비어있음 — 미페어링 상태로 시작")
         except Exception as e:
             logger.warning(f"[Pairing] 페어링 복구 실패: {e}")
 
     def generate_code(self) -> str:
-        """6자리 페어링 코드를 생성합니다. 5분 후 만료."""
+        """6자리 페어링 코드를 생성합니다. 5분 후 만료.
+        이미 유효한 코드가 있으면 새로 생성하지 않고 그대로 반환 (idempotent)."""
         with self._lock:
+            if self.pairing_code and time.time() < self.code_expires_at:
+                logger.info(f"[Pairing] 기존 유효 코드 재사용: {self.pairing_code}")
+                return self.pairing_code
             self.pairing_code = "".join([str(random.randint(0, 9)) for _ in range(PAIRING_CODE_LENGTH)])
             self.code_expires_at = time.time() + PAIRING_CODE_EXPIRY
 
-        # Firebase에 코드 등록
+        # Firebase에 코드 등록 — devices/{deviceId} + pairing_requests/{code} 동시 기록
+        # Cloud Function verifyPairing이 pairing_requests/{code}를 atomic transaction으로 검증
         if self.db:
             try:
+                expires_dt = datetime.fromtimestamp(self.code_expires_at, tz=timezone.utc)
                 self.db.collection("devices").document(self.device_id).set({
                     "pairing_code": self.pairing_code,
                     "code_expires_at": self.code_expires_at,
                     "paired": self.is_paired,
                     "family_id": self.family_id,
                 }, merge=True)
+                self.db.collection("pairing_requests").document(self.pairing_code).set({
+                    "deviceId": self.device_id,
+                    "expiresAt": expires_dt,
+                    "claimed": False,
+                    "claimedBy": None,
+                    "createdAt": datetime.now(tz=timezone.utc),
+                })
             except Exception as e:
                 logger.warning(f"[Pairing] 코드 Firebase 저장 실패: {e}")
 
@@ -152,13 +170,22 @@ class PairingManager:
                         "created_at": time.time(),
                     })
 
-                # 사용자 문서 생성
+                # 사용자 문서 생성/업데이트
+                # 다대다 지원: pairings[] 배열에 추가하여 한 보호자가 여러 시니어와
+                # 페어링 가능하도록 함. legacy device_id/family_id 필드는 보호자 앱
+                # 마이그레이션을 위해 마지막 페어링 값으로 유지 (가장 최근 활성 시니어).
                 self.db.collection("users").document(user_id).set({
                     "name": user_name,
-                    "family_id": self.family_id,
-                    "device_id": self.device_id,
+                    "family_id": self.family_id,   # legacy: 마지막 페어링
+                    "device_id": self.device_id,   # legacy: 마지막 페어링
                     "fcm_token": fcm_token,
                     "role": "보호자",
+                    "pairedDeviceIds": firestore.ArrayUnion([self.device_id]),
+                    "pairings": firestore.ArrayUnion([{
+                        "family_id": self.family_id,
+                        "device_id": self.device_id,
+                        "paired_at": time.time(),
+                    }]),
                 }, merge=True)
 
             except Exception as e:

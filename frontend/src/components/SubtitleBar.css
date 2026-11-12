@@ -149,6 +149,22 @@
   font-weight: 500;
 }
 
+/* === 듣고 있어요 (대화 모드 대기) — 마이크 활성 강조 === */
+.vp-idle--listening .vp-idle-icon {
+  opacity: 1;
+  animation: micPulse 1.2s ease-in-out infinite;
+}
+
+.vp-idle--listening .vp-idle-text {
+  color: var(--color-primary);
+  font-weight: 700;
+}
+
+@keyframes micPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.18); opacity: 0.55; }
+}
+
 /* === 공통 애니메이션 === */
 @keyframes vpFadeIn {
   from { opacity: 0; transform: translateY(6px); }

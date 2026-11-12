@@ -1,0 +1,13 @@
+# Firebase Functions
+node_modules/
+lib/
+*.log
+
+# 환경변수
+.env
+.env.*
+!.env.example
+
+# Firebase Functions 런타임 환경
+.runtimeconfig.json
+.firebaserc.local
